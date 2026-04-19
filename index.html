@@ -13,6 +13,56 @@
 <title>Naarro's Collection</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script type="module">
+// ══════════════════════════════════════════
+//  🔥 FIREBASE
+// ══════════════════════════════════════════
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, doc, getDoc, setDoc, collection, addDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCh4ZRRgWkuSQVvvfAnjDnCEx51t7AXRGg",
+  authDomain: "naarros-collection.firebaseapp.com",
+  projectId: "naarros-collection",
+  storageBucket: "naarros-collection.firebasestorage.app",
+  messagingSenderId: "811052151364",
+  appId: "1:811052151364:web:1332a3c0fb41544b338211"
+};
+
+const fbApp = initializeApp(firebaseConfig);
+const fbAuth = getAuth(fbApp);
+const fbDb = getFirestore(fbApp);
+const googleProvider = new GoogleAuthProvider();
+
+// Exponer al scope global para que el resto del código pueda usarlos
+window._fbAuth = fbAuth;
+window._fbDb = fbDb;
+window._fbSignInEmail = (email, pass) => signInWithEmailAndPassword(fbAuth, email, pass);
+window._fbCreateUser = (email, pass) => createUserWithEmailAndPassword(fbAuth, email, pass);
+window._fbSignInGoogle = () => signInWithPopup(fbAuth, googleProvider);
+window._fbSignOut = () => signOut(fbAuth);
+window._fbResetPassword = (email) => sendPasswordResetEmail(fbAuth, email);
+window._fbGetData = async (uid) => {
+  const snap = await getDoc(doc(fbDb, 'usuarios', uid, 'data', 'colecciones'));
+  return snap.exists() ? snap.data().colecciones : null;
+};
+window._fbSetData = async (uid, colecciones) => {
+  await setDoc(doc(fbDb, 'usuarios', uid, 'data', 'colecciones'), { colecciones, updatedAt: Date.now() });
+};
+window._fbSaveShare = async (shareId, data) => {
+  await setDoc(doc(fbDb, 'shares', shareId), { ...data, createdAt: Date.now() });
+};
+window._fbGetShare = async (shareId) => {
+  const snap = await getDoc(doc(fbDb, 'shares', shareId));
+  return snap.exists() ? snap.data() : null;
+};
+
+// Escuchar cambios de autenticación
+onAuthStateChanged(fbAuth, (user) => {
+  if (window._onAuthChange) window._onAuthChange(user);
+});
+</script>
 <style>
 /* ─── TEMAS ─── */
 :root {
@@ -402,15 +452,44 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
-<!-- MODAL CONTRASEÑA -->
-<div class="overlay show" id="modal-pin" style="z-index:9999;pointer-events:all;">
-  <div class="modal" style="max-width:340px;text-align:center;" onclick="event.stopPropagation()">
-    <div style="font-size:48px;margin-bottom:12px;">🔐</div>
-    <h3 style="margin-bottom:8px;">Naarro's Collection</h3>
-    <p style="color:var(--text2);font-size:14px;margin-bottom:20px;">Introduce tu contraseña para acceder</p>
-    <input class="form-input" id="pin-input" type="password" placeholder="Contraseña…" style="text-align:center;font-size:18px;letter-spacing:4px;" onkeydown="if(event.key==='Enter')checkPin()">
-    <div id="pin-error" style="color:var(--red);font-size:13px;margin-top:8px;min-height:18px;"></div>
-    <button class="btn btn-primary" style="width:100%;margin-top:14px;" onclick="checkPin()">Entrar</button>
+<!-- MODAL LOGIN -->
+<div class="overlay show" id="modal-login" style="z-index:9999;pointer-events:all;">
+  <div class="modal" style="max-width:380px;" onclick="event.stopPropagation()">
+    <div style="text-align:center;margin-bottom:20px;">
+      <div style="font-size:44px;margin-bottom:8px;">🃏</div>
+      <h3 style="margin-bottom:4px;">Naarro's Collection</h3>
+      <p style="color:var(--text2);font-size:13px;" id="login-subtitle">Inicia sesión para continuar</p>
+    </div>
+
+    <!-- Tabs -->
+    <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:20px;">
+      <button id="tab-login" onclick="switchTab('login')" style="flex:1;padding:9px;border:none;background:var(--accent);color:#fff;font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Entrar</button>
+      <button id="tab-register" onclick="switchTab('register')" style="flex:1;padding:9px;border:none;background:var(--surface2);color:var(--text2);font-family:'Outfit',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Registrarse</button>
+    </div>
+
+    <div id="login-form">
+      <div class="form-group"><label>Email</label><input class="form-input" id="auth-email" type="email" placeholder="tu@email.com" autocomplete="email"></div>
+      <div class="form-group"><label>Contraseña</label><input class="form-input" id="auth-pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <div id="auth-error" style="color:var(--red);font-size:13px;margin-bottom:10px;min-height:18px;text-align:center;"></div>
+      <button class="btn btn-primary" style="width:100%;margin-bottom:10px;" onclick="doLogin()" id="btn-login">Entrar</button>
+      <button class="btn btn-secondary" style="width:100%;margin-bottom:10px;" onclick="doGoogleLogin()">
+        <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Continuar con Google
+      </button>
+      <p style="text-align:center;font-size:12px;color:var(--text3);cursor:pointer;" onclick="doResetPassword()">¿Olvidaste tu contraseña?</p>
+    </div>
+
+    <div id="register-form" style="display:none;">
+      <div class="form-group"><label>Email</label><input class="form-input" id="reg-email" type="email" placeholder="tu@email.com" autocomplete="email"></div>
+      <div class="form-group"><label>Contraseña</label><input class="form-input" id="reg-pass" type="password" placeholder="Mínimo 6 caracteres" autocomplete="new-password"></div>
+      <div class="form-group"><label>Repetir contraseña</label><input class="form-input" id="reg-pass2" type="password" placeholder="Repite la contraseña" onkeydown="if(event.key==='Enter')doRegister()"></div>
+      <div id="reg-error" style="color:var(--red);font-size:13px;margin-bottom:10px;min-height:18px;text-align:center;"></div>
+      <button class="btn btn-primary" style="width:100%;margin-bottom:10px;" onclick="doRegister()">Crear cuenta</button>
+      <button class="btn btn-secondary" style="width:100%;" onclick="doGoogleLogin()">
+        <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Registrarse con Google
+      </button>
+    </div>
   </div>
 </div>
 
@@ -434,6 +513,11 @@ select.form-input { cursor: pointer; }
     </div>
     <div class="home-actions">
       <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
+      <div id="user-badge" style="display:none;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:5px 12px 5px 6px;cursor:pointer;" onclick="doLogout()" title="Cerrar sesión">
+        <div id="user-avatar" style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0;"></div>
+        <span id="user-name" style="font-size:13px;font-weight:600;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        <span style="font-size:11px;color:var(--text3);">Salir</span>
+      </div>
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
       <div class="storage-info"><div class="dot"></div><span id="storage-label">Cargando…</span></div>
       <button class="btn btn-secondary" onclick="openModal('modal-catalogo');renderCatalogo()">📚 Catálogo</button>
@@ -780,43 +864,99 @@ select.form-input { cursor: pointer; }
 
 <script>
 // ══════════════════════════════════════════
-//  🔐 CONTRASEÑA DE ACCESO
+//  🔐 FIREBASE AUTH
 // ══════════════════════════════════════════
-// Hash SHA-256 de la contraseña. Para cambiarla, genera el hash en:
-// https://emn178.github.io/online-tools/sha256.html
-// Contraseña actual: naarro2025
-const PIN_HASH = '2f96fe391c6a6c4ebf372190e19b6278f272eb9a28046ca1cb3e232ba0848565'; // contraseña: naarro2025
+let _currentUser = null;
 
-async function hashStr(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+function switchTab(tab) {
+  document.getElementById('login-form').style.display = tab === 'login' ? '' : 'none';
+  document.getElementById('register-form').style.display = tab === 'register' ? '' : 'none';
+  document.getElementById('tab-login').style.background = tab === 'login' ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('tab-login').style.color = tab === 'login' ? '#fff' : 'var(--text2)';
+  document.getElementById('tab-register').style.background = tab === 'register' ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('tab-register').style.color = tab === 'register' ? '#fff' : 'var(--text2)';
 }
 
-async function checkPin() {
-  const val = document.getElementById('pin-input').value;
-  if (!val) return;
-  const h = await hashStr(val);
-  if (h === PIN_HASH) {
-    document.getElementById('modal-pin').classList.remove('show');
-    try { sessionStorage.setItem('nc_auth','1'); } catch {}
-    // Mostrar modal de bienvenida si no hay datos aún (se gestiona en load())
-  } else {
-    const err = document.getElementById('pin-error');
-    err.textContent = 'Contraseña incorrecta';
-    document.getElementById('pin-input').value = '';
-    document.getElementById('pin-input').focus();
-    setTimeout(() => { err.textContent = ''; }, 2000);
+function setAuthError(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; setTimeout(() => { el.textContent = ''; }, 4000); }
+}
+
+async function doLogin() {
+  const email = document.getElementById('auth-email').value.trim();
+  const pass = document.getElementById('auth-pass').value;
+  if (!email || !pass) { setAuthError('auth-error', 'Introduce email y contraseña'); return; }
+  const btn = document.getElementById('btn-login');
+  btn.disabled = true; btn.textContent = 'Entrando…';
+  try {
+    await window._fbSignInEmail(email, pass);
+  } catch(e) {
+    btn.disabled = false; btn.textContent = 'Entrar';
+    const msgs = { 'auth/user-not-found': 'Usuario no encontrado', 'auth/wrong-password': 'Contraseña incorrecta', 'auth/invalid-email': 'Email inválido', 'auth/invalid-credential': 'Email o contraseña incorrectos', 'auth/too-many-requests': 'Demasiados intentos. Espera un momento.' };
+    setAuthError('auth-error', msgs[e.code] || 'Error al iniciar sesión');
   }
 }
 
-// Si ya autenticó en esta sesión, no pedir contraseña de nuevo
-(function() {
+async function doRegister() {
+  const email = document.getElementById('reg-email').value.trim();
+  const pass = document.getElementById('reg-pass').value;
+  const pass2 = document.getElementById('reg-pass2').value;
+  if (!email || !pass) { setAuthError('reg-error', 'Rellena todos los campos'); return; }
+  if (pass !== pass2) { setAuthError('reg-error', 'Las contraseñas no coinciden'); return; }
+  if (pass.length < 6) { setAuthError('reg-error', 'La contraseña debe tener al menos 6 caracteres'); return; }
   try {
-    if (sessionStorage.getItem('nc_auth') === '1') {
-      document.getElementById('modal-pin').classList.remove('show');
-    }
-  } catch {}
-})();
+    await window._fbCreateUser(email, pass);
+  } catch(e) {
+    const msgs = { 'auth/email-already-in-use': 'Este email ya está registrado', 'auth/invalid-email': 'Email inválido', 'auth/weak-password': 'Contraseña demasiado débil' };
+    setAuthError('reg-error', msgs[e.code] || 'Error al crear la cuenta');
+  }
+}
+
+async function doGoogleLogin() {
+  try { await window._fbSignInGoogle(); }
+  catch(e) { if (e.code !== 'auth/popup-closed-by-user') setAuthError('auth-error', 'Error con Google: ' + e.message); }
+}
+
+async function doLogout() {
+  if (!confirm('¿Cerrar sesión?')) return;
+  await window._fbSignOut();
+  STATE.colecciones = []; _currentUser = null;
+  document.getElementById('user-badge').style.display = 'none';
+  document.getElementById('modal-login').classList.add('show');
+  renderHome();
+}
+
+async function doResetPassword() {
+  const email = document.getElementById('auth-email').value.trim();
+  if (!email) { setAuthError('auth-error', 'Introduce tu email primero'); return; }
+  try {
+    await window._fbResetPassword(email);
+    setAuthError('auth-error', '✅ Email de recuperación enviado');
+  } catch(e) { setAuthError('auth-error', 'Error: ' + e.message); }
+}
+
+// Callback cuando cambia el usuario autenticado
+window._onAuthChange = async (user) => {
+  if (user) {
+    _currentUser = user;
+    document.getElementById('modal-login').classList.remove('show');
+    // Mostrar info de usuario
+    const badge = document.getElementById('user-badge');
+    const nameEl = document.getElementById('user-name');
+    const avatarEl = document.getElementById('user-avatar');
+    const displayName = user.displayName || user.email.split('@')[0];
+    nameEl.textContent = displayName;
+    avatarEl.textContent = displayName[0].toUpperCase();
+    badge.style.display = 'flex';
+    // Cargar datos del usuario
+    await load();
+    renderHome();
+  } else {
+    _currentUser = null;
+    document.getElementById('modal-login').classList.add('show');
+    document.getElementById('user-badge').style.display = 'none';
+  }
+};
 
 
 const EMOJIS = ['⭐','🏆','⚽','🏀','🎮','🦁','🐉','🌍','🎯','🎨','🚀','🎸','🦊','🌊','🔥','💎','🌈','🍕','🐋','🦋'];
@@ -865,36 +1005,19 @@ function applyTheme(theme) {
 })();
 
 // ══════════════════════════════════════════
-//  ☁️ SUPABASE CONFIG
+//  ☁️ FIREBASE CONFIG (solo shares públicas, datos via SDK)
 // ══════════════════════════════════════════
+// Supabase se mantiene SOLO para shares públicas de QR
 const SB_URL = 'https://uhqmlpiacgodjouccekl.supabase.co';
 const SB_KEY = 'sb_publishable_mG_gUJ3i2gp72F2NCc9ZVA_UMeebLKT';
-const SB_TABLE = 'colecciones';
-const SB_ROW_ID = 'naarros_main'; // fila única con toda la colección
-
-async function sbFetch(method, body) {
-  const url = `${SB_URL}/rest/v1/${SB_TABLE}?id=eq.${SB_ROW_ID}`;
-  const headers = {
-    'apikey': SB_KEY,
-    'Authorization': 'Bearer ' + SB_KEY,
-    'Content-Type': 'application/json',
-    'Prefer': method === 'POST' ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal'
-  };
-  const opts = { method, headers };
-  if (body !== undefined) opts.body = JSON.stringify(body);
-  const r = await fetch(method === 'GET' ? `${SB_URL}/rest/v1/${SB_TABLE}?id=eq.${SB_ROW_ID}&select=data,updated_at` : url, opts);
-  if (!r.ok) throw new Error('Supabase ' + r.status);
-  return r;
-}
 
 function setSyncStatus(status) {
-  // status: 'syncing' | 'ok' | 'offline' | 'error'
   const dot = document.querySelector('.storage-info .dot');
   const label = document.getElementById('storage-label');
   if (!dot || !label) return;
   const map = {
     syncing: { color: 'var(--yellow)', text: '☁️ Sincronizando…' },
-    ok:      { color: 'var(--green)',  text: '☁️ Supabase · Sincronizado' },
+    ok:      { color: 'var(--green)',  text: '☁️ Firebase · Sincronizado' },
     offline: { color: 'var(--yellow)', text: '📡 Offline · Local' },
     error:   { color: 'var(--red)',    text: '⚠️ Error al sincronizar' },
   };
@@ -920,42 +1043,41 @@ function dbGet(key) { return new Promise((res, rej) => { const req = db.transact
 function dbSet(key, val) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readwrite').objectStore(STORE).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
 
 // ══════════════════════════════════════════
-//  SAVE — local + nube
+//  SAVE — local + Firebase
 // ══════════════════════════════════════════
 let _saveTimer = null;
 let _pendingSync = false;
 
 function save() {
+  if (!_currentUser) return;
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(async () => {
-    // 1. Guardar local siempre (instantáneo)
-    try { await dbSet('colpro_v3', STATE.colecciones); } catch { try { localStorage.setItem('colpro_v2', JSON.stringify(STATE.colecciones)); } catch {} }
-
-    // 2. Sincronizar con Supabase si hay conexión
+    const uid = _currentUser.uid;
+    // 1. Guardar local
+    try { await dbSet('colpro_' + uid, STATE.colecciones); } catch {}
+    // 2. Guardar en Firebase
     if (!navigator.onLine) { setSyncStatus('offline'); _pendingSync = true; return; }
     setSyncStatus('syncing');
     try {
-      await sbFetch('POST', { id: SB_ROW_ID, data: STATE.colecciones, updated_at: new Date().toISOString() });
+      await window._fbSetData(uid, STATE.colecciones);
       setSyncStatus('ok');
       _pendingSync = false;
     } catch(e) {
-      console.warn('Sync error:', e);
+      console.warn('Firebase save error:', e);
       setSyncStatus('error');
       _pendingSync = true;
     }
   }, 600);
 }
 
-// Sincronizar cuando vuelve la conexión
 window.addEventListener('online', async () => {
   document.getElementById('offline-badge')?.classList.remove('show');
-  if (_pendingSync) {
+  if (_pendingSync && _currentUser) {
     setSyncStatus('syncing');
     try {
-      await sbFetch('POST', { id: SB_ROW_ID, data: STATE.colecciones, updated_at: new Date().toISOString() });
-      setSyncStatus('ok');
-      _pendingSync = false;
-      toast('Datos sincronizados con la nube ☁️', '✅');
+      await window._fbSetData(_currentUser.uid, STATE.colecciones);
+      setSyncStatus('ok'); _pendingSync = false;
+      toast('Datos sincronizados ☁️', '✅');
     } catch { setSyncStatus('error'); }
   }
 });
@@ -965,54 +1087,44 @@ window.addEventListener('offline', () => {
 });
 
 // ══════════════════════════════════════════
-//  LOAD — nube primero, local como fallback
+//  LOAD — Firebase primero, local como fallback
 // ══════════════════════════════════════════
 async function load() {
+  if (!_currentUser) return;
+  const uid = _currentUser.uid;
   try { await openDB(); } catch {}
 
-  // Cargar local primero para arranque rápido
+  // Cargar local primero (arranque rápido)
   try {
-    const local = await dbGet('colpro_v3');
-    if (local && Array.isArray(local)) { STATE.colecciones = local; setSyncStatus('offline'); }
-    else {
-      const old = localStorage.getItem('colpro_v2');
-      if (old) { STATE.colecciones = JSON.parse(old); }
-    }
+    const local = await dbGet('colpro_' + uid);
+    if (local && Array.isArray(local)) { STATE.colecciones = local; setSyncStatus('offline'); renderHome(); }
   } catch {}
 
-  // Luego intentar cargar desde Supabase (datos más recientes)
+  // Cargar desde Firebase
   if (navigator.onLine) {
     setSyncStatus('syncing');
     try {
-      const r = await sbFetch('GET');
-      const rows = await r.json();
-      if (rows && rows.length > 0 && Array.isArray(rows[0].data)) {
-        const remoteData = rows[0].data;
-        // Usar datos remotos si son más recientes o locales están vacíos
-        if (!STATE.colecciones.length || remoteData.length >= STATE.colecciones.length) {
-          STATE.colecciones = remoteData;
-          try { await dbSet('colpro_v3', STATE.colecciones); } catch {}
-        }
+      const remoteData = await window._fbGetData(uid);
+      if (remoteData && Array.isArray(remoteData)) {
+        STATE.colecciones = remoteData;
+        try { await dbSet('colpro_' + uid, remoteData); } catch {}
         setSyncStatus('ok');
-        // Re-renderizar con datos de la nube
-        renderHome();
       } else {
-        // Primera vez en la nube — subir datos locales si existen
+        // Primera vez — subir datos locales si existen
         if (STATE.colecciones.length > 0) {
-          await sbFetch('POST', { id: SB_ROW_ID, data: STATE.colecciones, updated_at: new Date().toISOString() });
-          toast('Colecciones subidas a la nube ☁️', '✅');
+          await window._fbSetData(uid, STATE.colecciones);
+          toast('Colecciones subidas a Firebase ☁️', '✅');
         }
         setSyncStatus('ok');
       }
     } catch(e) {
-      console.warn('No se pudo conectar a Supabase:', e);
+      console.warn('Firebase load error:', e);
       setSyncStatus(STATE.colecciones.length ? 'offline' : 'error');
     }
   } else {
     setSyncStatus('offline');
   }
 
-  // Ocultar modal de bienvenida si hay datos
   if (STATE.colecciones.length > 0) {
     document.getElementById('modal-start')?.classList.remove('show');
   }
@@ -1843,15 +1955,9 @@ async function abrirIntercambio(colId) {
   let link = 'https://naarro07.github.io/Naarros-collection/?intercambio=' + encodeURIComponent(JSON.stringify(shareData));
 
   try {
-    // Intentar guardar en Supabase para tener URL corta
-    const res = await fetch(`${SB_URL}/rest/v1/colecciones`, {
-      method: 'POST',
-      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({ id: shareId, data: shareData, updated_at: new Date().toISOString() })
-    });
-    if (res.ok) {
-      link = `https://naarro07.github.io/Naarros-collection/?share=${shareId}`;
-    }
+    const shareId = 'share_' + STATE.fichaColId.slice(0,8);
+    await window._fbSaveShare(shareId, shareData);
+    link = `https://naarro07.github.io/Naarros-collection/?share=${shareId}`;
   } catch {}
 
   document.getElementById('share-link-input').value = link;
@@ -1978,21 +2084,19 @@ function toast(msg, icon='ℹ️', type='') {
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-// Cerrar modales clickando overlay o pulsando Escape (EXCEPTO modal-pin)
+// Cerrar modales clickando overlay o pulsando Escape (EXCEPTO modal-login)
 document.querySelectorAll('.overlay').forEach(o => {
-  if (o.id === 'modal-pin') return; // el PIN no se puede cerrar clickando fuera
+  if (o.id === 'modal-login') return;
   o.addEventListener('click', e => { if (e.target === o) closeModal(o.id); });
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    // No cerrar el PIN con Escape
     document.querySelectorAll('.overlay.show').forEach(o => {
-      if (o.id !== 'modal-pin') closeModal(o.id);
+      if (o.id !== 'modal-login') closeModal(o.id);
     });
   }
   if (e.key === 'Enter' && !e.shiftKey) {
-    // Si el PIN está visible, Enter lo valida
-    if (document.getElementById('modal-pin').classList.contains('show')) { e.preventDefault(); checkPin(); return; }
+    if (document.getElementById('modal-login').classList.contains('show')) return;
     const active = document.querySelector('.overlay.show:not(#modal-excel)');
     if (!active) return;
     const id = active.id;
@@ -2207,13 +2311,9 @@ async function checkIntercambioURL() {
 
     let data = null;
     if (shareId) {
-      // Cargar desde Supabase (solo lectura, sin autenticación)
+      // Cargar desde Firebase (solo lectura pública)
       try {
-        const r = await fetch(`${SB_URL}/rest/v1/colecciones?id=eq.${encodeURIComponent(shareId)}&select=data`, {
-          headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
-        });
-        const rows = await r.json();
-        if (rows && rows[0]) data = rows[0].data;
+        data = await window._fbGetShare(shareId);
       } catch {}
     } else if (rawInline) {
       data = JSON.parse(decodeURIComponent(rawInline));
@@ -2465,7 +2565,12 @@ function cerrarBannerPWA() {
   try { localStorage.setItem('nc_pwa_ok','1'); } catch {}
 }
 
-load().then(() => { renderHome(); setupDropZone(); initPWA(); checkIntercambioURL(); });
+// Firebase onAuthStateChanged gestiona el load() automáticamente
+// Solo inicializamos lo que no depende del usuario
+setupDropZone();
+initPWA();
+checkIntercambioURL();
+renderHome(); // Mostrar home vacío mientras carga
 </script>
 </body>
 </html>
