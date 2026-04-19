@@ -402,7 +402,19 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
-<div class="overlay show" id="modal-start" style="z-index:9999;">
+<!-- MODAL CONTRASEÑA -->
+<div class="overlay show" id="modal-pin" style="z-index:9999;">
+  <div class="modal" style="max-width:340px;text-align:center;">
+    <div style="font-size:48px;margin-bottom:12px;">🔐</div>
+    <h3 style="margin-bottom:8px;">Naarro's Collection</h3>
+    <p style="color:var(--text2);font-size:14px;margin-bottom:20px;">Introduce tu contraseña para acceder</p>
+    <input class="form-input" id="pin-input" type="password" placeholder="Contraseña…" style="text-align:center;font-size:18px;letter-spacing:4px;" onkeydown="if(event.key==='Enter')checkPin()">
+    <div id="pin-error" style="color:var(--red);font-size:13px;margin-top:8px;min-height:18px;"></div>
+    <button class="btn btn-primary" style="width:100%;margin-top:14px;" onclick="checkPin()">Entrar</button>
+  </div>
+</div>
+
+<div class="overlay" id="modal-start" style="z-index:9998;">
   <div class="modal">
     <h3>Bienvenido 👋</h3>
     <p style="color:var(--text2);margin-bottom:16px;">¿Quieres cargar una colección o empezar desde cero?</p>
@@ -753,8 +765,45 @@ select.form-input { cursor: pointer; }
 
 <script>
 // ══════════════════════════════════════════
-//  CONSTANTES Y ESTADO
+//  🔐 CONTRASEÑA DE ACCESO
 // ══════════════════════════════════════════
+// Hash SHA-256 de la contraseña. Para cambiarla, genera el hash en:
+// https://emn178.github.io/online-tools/sha256.html
+// Contraseña actual: naarro2025
+const PIN_HASH = '2f96fe391c6a6c4ebf372190e19b6278f272eb9a28046ca1cb3e232ba0848565'; // contraseña: naarro2025
+
+async function hashStr(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function checkPin() {
+  const val = document.getElementById('pin-input').value;
+  if (!val) return;
+  const h = await hashStr(val);
+  if (h === PIN_HASH) {
+    document.getElementById('modal-pin').classList.remove('show');
+    try { sessionStorage.setItem('nc_auth','1'); } catch {}
+    // Mostrar modal de bienvenida si no hay datos aún (se gestiona en load())
+  } else {
+    const err = document.getElementById('pin-error');
+    err.textContent = 'Contraseña incorrecta';
+    document.getElementById('pin-input').value = '';
+    document.getElementById('pin-input').focus();
+    setTimeout(() => { err.textContent = ''; }, 2000);
+  }
+}
+
+// Si ya autenticó en esta sesión, no pedir contraseña de nuevo
+(function() {
+  try {
+    if (sessionStorage.getItem('nc_auth') === '1') {
+      document.getElementById('modal-pin').classList.remove('show');
+    }
+  } catch {}
+})();
+
+
 const EMOJIS = ['⭐','🏆','⚽','🏀','🎮','🦁','🐉','🌍','🎯','🎨','🚀','🎸','🦊','🌊','🔥','💎','🌈','🍕','🐋','🦋'];
 const SAVE_DELAY = 400;
 
