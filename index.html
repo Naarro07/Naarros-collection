@@ -1705,7 +1705,7 @@ function abrirIntercambio(colId) {
   const repes = col.cromos.filter(c => c.repetidos > 0 && c.tengo !== false).map(c => c.numero);
   const faltas = col.cromos.filter(c => c.tengo === false).map(c => c.numero);
   const payload = encodeURIComponent(JSON.stringify({ n: col.name, e: col.emoji, r: repes, f: faltas }));
-  const link = location.href.split('?')[0] + '?intercambio=' + payload;
+  const link = 'https://naarro07.github.io/Naarros-collection/?intercambio=' + payload;
   document.getElementById('share-link-input').value = link;
   const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(link);
   document.getElementById('qr-container').innerHTML = '<img src="' + qrUrl + '" width="160" height="160" style="border-radius:8px;" onerror="this.parentNode.innerHTML=\'<p style=color:var(--text3)>QR no disponible offline</p>\'">';
@@ -2060,8 +2060,8 @@ function initPWA() {
     name: "Naarro's Collection",
     short_name: "Naarro's",
     description: "Gestiona tus colecciones de cromos con fotos e IA",
-    start_url: location.href.split('?')[0],
-    scope: location.href.split('?')[0],
+    start_url: 'https://naarro07.github.io/Naarros-collection/',
+    scope: 'https://naarro07.github.io/Naarros-collection/',
     display: "standalone",
     background_color: "#0d0f14",
     theme_color: "#0d0f14",
