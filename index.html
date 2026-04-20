@@ -7,8 +7,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Naarro's Collection">
-<link rel="apple-touch-icon" id="apple-touch-icon">
 <meta name="description" content="Gestiona tus colecciones de cromos">
+<!-- Security headers -->
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+<meta http-equiv="X-Frame-Options" content="DENY">
+<meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
+<meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(), geolocation=()">
+<link rel="apple-touch-icon" id="apple-touch-icon">
 <link rel="manifest" id="pwa-manifest">
 <title>Naarro's Collection</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -80,6 +85,14 @@ onAuthStateChanged(fbAuth, (user) => {
   --yellow: #d48f00; --text: #1a1d2e; --text2: #5a6080; --text3: #8890b0;
   --shadow-card: 0 2px 12px rgba(0,0,0,0.08);
 }
+
+/* ─── SPLASH DE CARGA ─── */
+#splash { position:fixed;inset:0;background:#0d0f14;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity 0.3s; }
+#splash.hidden { opacity:0;pointer-events:none; }
+#splash .splash-icon { font-size:64px;animation:splashPulse 1.4s ease-in-out infinite; }
+#splash .splash-title { font-size:22px;font-weight:800;color:#e8eaf0;letter-spacing:-0.5px; }
+#splash .splash-sub { font-size:13px;color:#545c75; }
+@keyframes splashPulse { 0%,100%{transform:scale(1);opacity:0.8} 50%{transform:scale(1.08);opacity:1} }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; transition: background 0.25s, color 0.25s; }
@@ -439,6 +452,13 @@ select.form-input { cursor: pointer; }
 </head>
 <body>
 
+<!-- SPLASH -->
+<div id="splash">
+  <div class="splash-icon">🃏</div>
+  <div class="splash-title">Naarro's Collection</div>
+  <div class="splash-sub">Cargando…</div>
+</div>
+
 <!-- PWA INSTALL BANNER -->
 <div class="offline-badge" id="offline-badge">📡 Sin conexión — modo offline</div>
 <div class="pwa-banner" id="pwa-banner">
@@ -453,7 +473,7 @@ select.form-input { cursor: pointer; }
 </div>
 
 <!-- MODAL LOGIN -->
-<div class="overlay show" id="modal-login" style="z-index:9999;pointer-events:all;">
+<div class="overlay" id="modal-login" style="z-index:9999;pointer-events:all;">
   <div class="modal" style="max-width:380px;" onclick="event.stopPropagation()">
     <div style="text-align:center;margin-bottom:20px;">
       <div style="font-size:44px;margin-bottom:8px;">🃏</div>
@@ -864,9 +884,44 @@ select.form-input { cursor: pointer; }
 
 <script>
 // ══════════════════════════════════════════
-//  🔐 FIREBASE AUTH
+//  🔐 FIREBASE AUTH + SESIÓN 72H
 // ══════════════════════════════════════════
 let _currentUser = null;
+const SESSION_KEY = 'nc_session';
+const SESSION_TTL = 72 * 60 * 60 * 1000; // 72 horas en ms
+
+function getSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s.uid || !s.ts) return null;
+    if (Date.now() - s.ts > SESSION_TTL) { localStorage.removeItem(SESSION_KEY); return null; }
+    return s;
+  } catch { return null; }
+}
+function setSession(user) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      uid: user.uid,
+      email: user.email,
+      name: user.displayName || user.email.split('@')[0],
+      ts: Date.now()
+    }));
+  } catch {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
+}
+
+function hideSplash() {
+  const s = document.getElementById('splash');
+  if (s) { s.classList.add('hidden'); setTimeout(() => s.remove(), 350); }
+}
+function showLogin() {
+  hideSplash();
+  document.getElementById('modal-login').classList.add('show');
+}
 
 function switchTab(tab) {
   document.getElementById('login-form').style.display = tab === 'login' ? '' : 'none';
@@ -879,20 +934,31 @@ function switchTab(tab) {
 
 function setAuthError(id, msg) {
   const el = document.getElementById(id);
-  if (el) { el.textContent = msg; setTimeout(() => { el.textContent = ''; }, 4000); }
+  if (el) { el.textContent = msg; setTimeout(() => { if (el) el.textContent = ''; }, 4000); }
+}
+
+function setLoginLoading(loading) {
+  const btn = document.getElementById('btn-login');
+  if (btn) { btn.disabled = loading; btn.textContent = loading ? 'Entrando…' : 'Entrar'; }
 }
 
 async function doLogin() {
   const email = document.getElementById('auth-email').value.trim();
   const pass = document.getElementById('auth-pass').value;
   if (!email || !pass) { setAuthError('auth-error', 'Introduce email y contraseña'); return; }
-  const btn = document.getElementById('btn-login');
-  btn.disabled = true; btn.textContent = 'Entrando…';
+  setLoginLoading(true);
   try {
     await window._fbSignInEmail(email, pass);
   } catch(e) {
-    btn.disabled = false; btn.textContent = 'Entrar';
-    const msgs = { 'auth/user-not-found': 'Usuario no encontrado', 'auth/wrong-password': 'Contraseña incorrecta', 'auth/invalid-email': 'Email inválido', 'auth/invalid-credential': 'Email o contraseña incorrectos', 'auth/too-many-requests': 'Demasiados intentos. Espera un momento.' };
+    setLoginLoading(false);
+    const msgs = {
+      'auth/user-not-found': 'Usuario no encontrado',
+      'auth/wrong-password': 'Contraseña incorrecta',
+      'auth/invalid-email': 'Email inválido',
+      'auth/invalid-credential': 'Email o contraseña incorrectos',
+      'auth/too-many-requests': 'Demasiados intentos. Espera un momento.',
+      'auth/network-request-failed': 'Sin conexión a internet'
+    };
     setAuthError('auth-error', msgs[e.code] || 'Error al iniciar sesión');
   }
 }
@@ -903,26 +969,31 @@ async function doRegister() {
   const pass2 = document.getElementById('reg-pass2').value;
   if (!email || !pass) { setAuthError('reg-error', 'Rellena todos los campos'); return; }
   if (pass !== pass2) { setAuthError('reg-error', 'Las contraseñas no coinciden'); return; }
-  if (pass.length < 6) { setAuthError('reg-error', 'La contraseña debe tener al menos 6 caracteres'); return; }
+  if (pass.length < 6) { setAuthError('reg-error', 'Mínimo 6 caracteres'); return; }
   try {
     await window._fbCreateUser(email, pass);
   } catch(e) {
-    const msgs = { 'auth/email-already-in-use': 'Este email ya está registrado', 'auth/invalid-email': 'Email inválido', 'auth/weak-password': 'Contraseña demasiado débil' };
+    const msgs = {
+      'auth/email-already-in-use': 'Este email ya está registrado',
+      'auth/invalid-email': 'Email inválido',
+      'auth/weak-password': 'Contraseña demasiado débil'
+    };
     setAuthError('reg-error', msgs[e.code] || 'Error al crear la cuenta');
   }
 }
 
 async function doGoogleLogin() {
   try { await window._fbSignInGoogle(); }
-  catch(e) { if (e.code !== 'auth/popup-closed-by-user') setAuthError('auth-error', 'Error con Google: ' + e.message); }
+  catch(e) { if (e.code !== 'auth/popup-closed-by-user') setAuthError('auth-error', 'Error con Google'); }
 }
 
 async function doLogout() {
   if (!confirm('¿Cerrar sesión?')) return;
+  clearSession();
   await window._fbSignOut();
   STATE.colecciones = []; _currentUser = null;
   document.getElementById('user-badge').style.display = 'none';
-  document.getElementById('modal-login').classList.add('show');
+  showLogin();
   renderHome();
 }
 
@@ -931,30 +1002,45 @@ async function doResetPassword() {
   if (!email) { setAuthError('auth-error', 'Introduce tu email primero'); return; }
   try {
     await window._fbResetPassword(email);
-    setAuthError('auth-error', '✅ Email de recuperación enviado');
-  } catch(e) { setAuthError('auth-error', 'Error: ' + e.message); }
+    setAuthError('auth-error', '✅ Email enviado, revisa tu bandeja');
+  } catch { setAuthError('auth-error', 'Error al enviar el email'); }
 }
 
-// Callback cuando cambia el usuario autenticado
+function updateUserBadge(user) {
+  const badge = document.getElementById('user-badge');
+  const nameEl = document.getElementById('user-name');
+  const avatarEl = document.getElementById('user-avatar');
+  const displayName = user.displayName || user.email.split('@')[0];
+  if (nameEl) nameEl.textContent = displayName;
+  if (avatarEl) avatarEl.textContent = displayName[0].toUpperCase();
+  if (badge) badge.style.display = 'flex';
+}
+
+// Callback Firebase auth
 window._onAuthChange = async (user) => {
   if (user) {
     _currentUser = user;
+    setSession(user);
     document.getElementById('modal-login').classList.remove('show');
-    // Mostrar info de usuario
-    const badge = document.getElementById('user-badge');
-    const nameEl = document.getElementById('user-name');
-    const avatarEl = document.getElementById('user-avatar');
-    const displayName = user.displayName || user.email.split('@')[0];
-    nameEl.textContent = displayName;
-    avatarEl.textContent = displayName[0].toUpperCase();
-    badge.style.display = 'flex';
-    // Cargar datos del usuario
+    updateUserBadge(user);
     await load();
     renderHome();
+    hideSplash();
   } else {
-    _currentUser = null;
-    document.getElementById('modal-login').classList.add('show');
-    document.getElementById('user-badge').style.display = 'none';
+    // Sin usuario Firebase — comprobar sesión local 72h
+    const session = getSession();
+    if (session) {
+      // Sesión válida — esperar a que Firebase resuelva (puede tardar 1-2s en modo offline)
+      setTimeout(() => {
+        if (!_currentUser) {
+          // Firebase sigue sin resolver — mostrar login
+          showLogin();
+        }
+      }, 2500);
+    } else {
+      // Sin sesión — mostrar login directamente
+      showLogin();
+    }
   }
 };
 
@@ -1005,12 +1091,8 @@ function applyTheme(theme) {
 })();
 
 // ══════════════════════════════════════════
-//  ☁️ FIREBASE CONFIG (solo shares públicas, datos via SDK)
+//  ☁️ SYNC STATUS
 // ══════════════════════════════════════════
-// Supabase se mantiene SOLO para shares públicas de QR
-const SB_URL = 'https://uhqmlpiacgodjouccekl.supabase.co';
-const SB_KEY = 'sb_publishable_mG_gUJ3i2gp72F2NCc9ZVA_UMeebLKT';
-
 function setSyncStatus(status) {
   const dot = document.querySelector('.storage-info .dot');
   const label = document.getElementById('storage-label');
@@ -2305,9 +2387,11 @@ async function checkIntercambioURL() {
     const params = new URLSearchParams(location.search);
     const shareId = params.get('share');
     const rawInline = params.get('intercambio');
-    if (!shareId && !rawInline) return;
+    if (!shareId && !rawInline) return false;
 
     history.replaceState(null, '', location.pathname);
+    // Ocultar splash inmediatamente para shares públicas
+    hideSplash();
 
     let data = null;
     if (shareId) {
@@ -2319,7 +2403,7 @@ async function checkIntercambioURL() {
       data = JSON.parse(decodeURIComponent(rawInline));
     }
 
-    if (!data || !data.n) return;
+    if (!data || !data.n) { hideSplash(); return false; }
 
     // Mostrar página de solo lectura — SIN acceder a la app principal
     const repes = (data.r || []); // array de objetos {num, nom, eq, tip} o strings legacy
@@ -2423,9 +2507,8 @@ async function checkIntercambioURL() {
           <p style="text-align:center;color:#545c75;font-size:12px;">Generado con <span style="color:#4f8cff;font-weight:600;">Naarro's Collection</span> 🃏</p>
         </div>
       </div>`;
-
-
-  } catch(e) {}
+    return true;
+  } catch(e) { return false; }
 }
 
 // FAB flash al guardar cromo
@@ -2565,12 +2648,16 @@ function cerrarBannerPWA() {
   try { localStorage.setItem('nc_pwa_ok','1'); } catch {}
 }
 
-// Firebase onAuthStateChanged gestiona el load() automáticamente
-// Solo inicializamos lo que no depende del usuario
-setupDropZone();
-initPWA();
-checkIntercambioURL();
-renderHome(); // Mostrar home vacío mientras carga
+// ── Init ──
+// checkIntercambioURL primero — si es una share pública, no necesita auth
+checkIntercambioURL().then(isShare => {
+  if (!isShare) {
+    setupDropZone();
+    initPWA();
+    renderHome();
+    // Firebase resolverá en _onAuthChange — splash se oculta allí
+  }
+});
 </script>
 </body>
 </html>
