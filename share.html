@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>Lista de intercambio · CollectionDB</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, doc, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const fbApp = initializeApp({
+  apiKey: "AIzaSyCh4ZRRgWkuSQVvvfAnjDnCEx51t7AXRGg",
+  authDomain: "naarros-collection.firebaseapp.com",
+  projectId: "naarros-collection",
+  storageBucket: "naarros-collection.firebasestorage.app",
+  messagingSenderId: "811052151364",
+  appId: "1:811052151364:web:1332a3c0fb41544b338211"
+});
+const fbDb = getFirestore(fbApp);
+
+window._fbGetShare = async (id) => {
+  const snap = await getDoc(doc(fbDb, 'shares', id));
+  return snap.exists() ? snap.data() : null;
+};
+window._fbReady = true;
+window.dispatchEvent(new Event('fb-ready'));
+</script>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Outfit',sans-serif;background:#0d0f14;color:#e8eaf0;min-height:100vh}
+
+/* ── LOADING ── */
+#loading{position:fixed;inset:0;background:#0d0f14;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:9999;transition:opacity .3s}
+#loading.out{opacity:0;pointer-events:none}
+.ld-icon{font-size:52px;animation:pulse 1.4s ease-in-out infinite}
+.ld-txt{font-size:15px;color:#545c75}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:.7}50%{transform:scale(1.08);opacity:1}}
+
+/* ── LAYOUT ── */
+.page{max-width:540px;margin:0 auto;padding:0 0 40px}
+
+/* ── HEADER ── */
+.hdr{background:linear-gradient(160deg,#161921 0%,#1e2330 100%);border-bottom:1px solid #2a3148;padding:28px 24px 24px;text-align:center;position:relative;overflow:hidden}
+.hdr::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(79,140,255,.14),transparent);pointer-events:none}
+.hdr-emoji{font-size:54px;margin-bottom:10px;position:relative}
+.hdr-title{font-size:21px;font-weight:800;letter-spacing:-.5px;position:relative}
+.hdr-sub{color:#8b92a8;font-size:13px;margin-top:5px;position:relative}
+.hdr-date{color:#545c75;font-size:12px;margin-top:3px;position:relative}
+.hdr-counters{display:flex;justify-content:center;gap:0;margin-top:18px;position:relative;border-radius:12px;overflow:hidden;border:1px solid #2a3148}
+.hdr-cnt{flex:1;padding:12px 8px;text-align:center;background:#161921}
+.hdr-cnt+.hdr-cnt{border-left:1px solid #2a3148}
+.hdr-cnt-val{font-size:24px;font-weight:800;font-family:'JetBrains Mono',monospace}
+.hdr-cnt-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-top:3px;color:#545c75}
+
+/* ── SECCIONES ── */
+.section{padding:20px 20px 0}
+.section-hdr{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.section-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.section-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.8px}
+.section-count{font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px;flex-shrink:0}
+
+/* ── TARJETAS ── */
+.cards-wrap{background:#161921;border:1px solid #2a3148;border-radius:14px;padding:16px;margin-bottom:4px}
+
+/* Grupo equipo */
+.grupo{margin-bottom:16px}
+.grupo:last-child{margin-bottom:0}
+.grupo-hdr{font-size:11px;font-weight:700;color:#545c75;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #252b3b;display:flex;align-items:center;gap:6px}
+.grupo-icon{font-size:13px}
+.cromos-grid{display:flex;flex-wrap:wrap;gap:6px}
+
+/* Tarjeta individual */
+.cromo-tag{background:#1e2330;border:1px solid #2a3148;border-radius:10px;padding:6px 10px;min-width:52px;text-align:center;transition:transform .15s}
+.cromo-tag:hover{transform:translateY(-2px);border-color:#4f8cff}
+.cromo-tag-num{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:15px}
+.cromo-tag-nom{font-size:10px;color:#8b92a8;margin-top:2px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cromo-tag-tip{font-size:9px;color:#545c75;margin-top:1px}
+
+/* ── TIPO ESPECIAL ── */
+.tipo-hdr{font-size:11px;font-weight:700;color:#4f8cff;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #252b3b}
+
+/* ── VACÍO ── */
+.empty{padding:20px;text-align:center;color:#545c75;font-size:13px}
+
+/* ── FOOTER ── */
+.footer{padding:20px;text-align:center;color:#545c75;font-size:12px}
+.footer a{color:#4f8cff;text-decoration:none;font-weight:600}
+
+/* ── ERROR ── */
+#error{display:none;position:fixed;inset:0;background:#0d0f14;align-items:center;justify-content:center;flex-direction:column;gap:16px;text-align:center;padding:32px}
+#error .ei{font-size:52px}
+#error h2{font-size:20px;font-weight:700}
+#error p{color:#8b92a8;font-size:14px;max-width:320px}
+#error.show{display:flex}
+
+/* ── RESPONSIVE ── */
+@media(max-width:480px){
+  .hdr{padding:20px 16px}
+  .section{padding:16px 16px 0}
+  .hdr-cnt-val{font-size:20px}
+}
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="ld-icon">🃏</div>
+  <div class="ld-txt">Cargando lista…</div>
+</div>
+
+<div id="error">
+  <div class="ei">😕</div>
+  <h2>Lista no encontrada</h2>
+  <p>Este enlace puede haber expirado o ser incorrecto.</p>
+</div>
+
+<div class="page" id="page" style="display:none"></div>
+
+<script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function hideSplash() {
+  const l = document.getElementById('loading');
+  l.classList.add('out'); setTimeout(() => l.remove(), 350);
+}
+function showError() { hideSplash(); document.getElementById('error').classList.add('show'); }
+
+function normalizar(lista) {
+  return (lista || []).map(item => {
+    if (typeof item === 'object' && item?.num !== undefined) return item;
+    const s = String(item);
+    if (s === '[object Object]' || s.startsWith('[object')) return null;
+    return { num: s, nom: '', eq: '', tip: '' };
+  }).filter(Boolean);
+}
+
+function renderLista(lista, accentColor, iconGrupo) {
+  if (!lista.length) return `<div class="empty">Ninguno 🎉</div>`;
+
+  // Separar Base Cards (por equipo) del resto (por tipo)
+  const baseCards = lista.filter(c => (c.tip||'').toLowerCase().includes('base'));
+  const otros = lista.filter(c => !(c.tip||'').toLowerCase().includes('base'));
+  let html = '';
+
+  if (baseCards.length) {
+    const grupos = {};
+    baseCards.forEach(c => {
+      const g = c.eq || 'Sin equipo';
+      if (!grupos[g]) grupos[g] = [];
+      grupos[g].push(c);
+    });
+    Object.entries(grupos).sort(([a],[b]) => a.localeCompare(b)).forEach(([grp, items]) => {
+      html += `<div class="grupo">
+        <div class="grupo-hdr"><span class="grupo-icon">${iconGrupo}</span>${esc(grp)}<span style="color:#545c75;font-weight:400;margin-left:auto">${items.length}</span></div>
+        <div class="cromos-grid">
+          ${items.map(c => `
+            <div class="cromo-tag">
+              <div class="cromo-tag-num" style="color:${accentColor}">${esc(c.num)}</div>
+              ${c.nom ? `<div class="cromo-tag-nom">${esc(c.nom)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`;
+    });
+  }
+
+  if (otros.length) {
+    const tipos = [...new Set(otros.map(c => c.tip || 'Especial'))];
+    tipos.forEach(tipo => {
+      const items = otros.filter(c => (c.tip || 'Especial') === tipo);
+      html += `<div class="grupo">
+        <div class="tipo-hdr">✨ ${esc(tipo)} <span style="color:#545c75;font-weight:400;margin-left:6px">${items.length}</span></div>
+        <div class="cromos-grid">
+          ${items.map(c => `
+            <div class="cromo-tag">
+              <div class="cromo-tag-num" style="color:${accentColor}">${esc(c.num)}</div>
+              ${c.nom ? `<div class="cromo-tag-nom">${esc(c.nom)}</div>` : ''}
+              ${c.eq && !c.tip.toLowerCase().includes('base') ? `<div class="cromo-tag-tip">${esc(c.eq)}</div>` : ''}
+            </div>`).join('')}
+        </div>
+      </div>`;
+    });
+  }
+
+  return html || `<div class="empty">Ninguno 🎉</div>`;
+}
+
+function renderPage(data) {
+  const repes = normalizar(data.r);
+  const faltas = normalizar(data.f);
+  const fecha = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
+
+  document.title = `${data.n} · Lista de intercambio`;
+  document.getElementById('page').innerHTML = `
+    <div class="hdr">
+      <div class="hdr-emoji">${esc(data.e||'🃏')}</div>
+      <div class="hdr-title">${esc(data.n)}</div>
+      <div class="hdr-sub">Lista de intercambio</div>
+      ${fecha ? `<div class="hdr-date">${fecha}</div>` : ''}
+      <div class="hdr-counters">
+        <div class="hdr-cnt">
+          <div class="hdr-cnt-val" style="color:#fbbf24">${repes.length}</div>
+          <div class="hdr-cnt-lbl">Repetidos</div>
+        </div>
+        <div class="hdr-cnt">
+          <div class="hdr-cnt-val" style="color:#ff4f6a">${faltas.length}</div>
+          <div class="hdr-cnt-lbl">Faltas</div>
+        </div>
+        <div class="hdr-cnt">
+          <div class="hdr-cnt-val" style="color:#4f8cff">${repes.length + faltas.length}</div>
+          <div class="hdr-cnt-lbl">Total</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REPETIDOS -->
+    <div class="section">
+      <div class="section-hdr">
+        <div class="section-dot" style="background:#fbbf24"></div>
+        <div class="section-title" style="color:#fbbf24">🔁 Repetidos — disponibles</div>
+        <div class="section-count" style="background:rgba(251,191,36,.12);color:#fbbf24">${repes.length}</div>
+      </div>
+      <div class="cards-wrap">
+        ${renderLista(repes, '#fbbf24', '🏟')}
+      </div>
+    </div>
+
+    <!-- FALTAS -->
+    <div class="section" style="padding-top:16px">
+      <div class="section-hdr">
+        <div class="section-dot" style="background:#ff4f6a"></div>
+        <div class="section-title" style="color:#ff4f6a">❓ Faltas — busco estos</div>
+        <div class="section-count" style="background:rgba(255,79,106,.12);color:#ff4f6a">${faltas.length}</div>
+      </div>
+      <div class="cards-wrap">
+        ${renderLista(faltas, '#4f8cff', '🏟')}
+      </div>
+    </div>
+
+    <div class="footer">
+      Generado con <a href="https://naarro07.github.io/Naarros-collection/" target="_blank">CollectionDB</a> 🃏
+    </div>`;
+
+  document.getElementById('page').style.display = '';
+  hideSplash();
+}
+
+async function init() {
+  const params = new URLSearchParams(location.search);
+  const shareId = params.get('id');
+  const rawData = params.get('data');
+
+  if (rawData) {
+    try { renderPage(JSON.parse(decodeURIComponent(rawData))); } catch { showError(); }
+    return;
+  }
+
+  if (!shareId) { showError(); return; }
+
+  if (!window._fbReady) {
+    await new Promise(res => window.addEventListener('fb-ready', res, { once: true }));
+  }
+
+  try {
+    const data = await window._fbGetShare(shareId);
+    if (!data || !data.n) { showError(); return; }
+    renderPage(data);
+  } catch { showError(); }
+}
+
+init();
+</script>
+</body>
+</html>
