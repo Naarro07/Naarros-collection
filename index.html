@@ -423,6 +423,8 @@ select.form-input{cursor:pointer}
     <div class="home-actions">
       <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="Tema">🌙</button>
       <button class="btn btn-green btn-sm" onclick="descargarBackup()">💾 Backup</button>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('file-restore').click()">📂 Restaurar</button>
+      <input type="file" id="file-restore" accept=".json" style="display:none" onchange="restaurarBackup(event)">
       <div class="sync-info"><div class="sync-dot" id="sync-dot"></div><span id="sync-lbl">Conectando…</span></div>
       <button class="btn btn-primary" onclick="openModal('modal-nueva-col')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
@@ -874,6 +876,39 @@ function descargarBackup() {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = 'collectiondb_backup.json'; a.click();
   toast('Backup descargado 💾');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RESTAURAR BACKUP
+// ═══════════════════════════════════════════════════════
+function restaurarBackup(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (Array.isArray(data)) {
+        // Actualizamos el estado de la app
+        STATE.cols = data;
+        
+        // Forzamos el guardado en IndexedDB y Firebase
+        save(); 
+        
+        // Renderizamos la pantalla de inicio de nuevo
+        renderHome(); 
+        toast('Backup restaurado con éxito 🎉', '✅');
+      } else {
+        toast('El formato del archivo JSON no es válido', '❌');
+      }
+    } catch(err) {
+      toast('Error al leer el archivo JSON', '❌');
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = ''; // Reseteamos el input
 }
 
 // ═══════════════════════════════════════════════════════
