@@ -1390,24 +1390,40 @@ function renderCromos() {
 
   const isManual = STATE.cromoSortKey === 'manual';
 
+  // ── Función de comparación numérica robusta ──
+  function cmpNumero(a, b, dir) {
+    const na = a.numero, nb = b.numero;
+    // Extraer prefijo de letras y parte numérica: "A-5" → {pre:"A-", num:5}
+    const parse = s => {
+      const m = String(s).match(/^([^0-9]*)(\d+(?:\.\d+)?)(.*)$/);
+      if (!m) return { pre: String(s), num: Infinity, suf: '' };
+      return { pre: m[1], num: parseFloat(m[2]), suf: m[3] };
+    };
+    const pa = parse(na), pb = parse(nb);
+    // Primero por prefijo de letras
+    if (pa.pre !== pb.pre) return dir * pa.pre.localeCompare(pb.pre);
+    // Luego numéricamente
+    if (pa.num !== pb.num) return dir * (pa.num - pb.num);
+    // Por sufijo
+    return dir * pa.suf.localeCompare(pb.suf);
+  }
+
   if (!isManual) {
     const dir = STATE.cromoSortDir, key = STATE.cromoSortKey;
     if (key === 'numero') {
-      // Smart sort: base cards → group by team; others → preserve manual order
-      const isBaseCard = c => !c.tipo || c.tipo.toLowerCase().includes('base') || c.tipo.trim() === '';
-      const baseCards = data.filter(isBaseCard);
-      const specialCards = data.filter(c => !isBaseCard(c));
+      // Base cards (sin tipo o tipo "base"): agrupar por equipo, dentro por número
+      const isBase = c => !c.tipo || c.tipo.toLowerCase().includes('base') || c.tipo.trim() === '';
+      const baseCards = data.filter(isBase);
+      const specials = data.filter(c => !isBase(c));
 
-      // Base cards sorted by team then number
       baseCards.sort((a, b) => {
-        const ea = (a.equipo || '').toLowerCase(), eb = (b.equipo || '').toLowerCase();
+        const ea = (a.equipo||'').toLowerCase(), eb = (b.equipo||'').toLowerCase();
         if (ea !== eb) return dir * ea.localeCompare(eb);
-        const na = isNaN(a.numero) ? a.numero : parseFloat(a.numero);
-        const nb = isNaN(b.numero) ? b.numero : parseFloat(b.numero);
-        return dir * (na < nb ? -1 : na > nb ? 1 : 0);
+        return cmpNumero(a, b, dir);
       });
-      // Special cards keep their manual relative order (already in col.cromos order)
-      data = [...baseCards, ...specialCards];
+      // Especiales: mantener orden original de col.cromos (índice manual)
+      specials.sort((a, b) => col.cromos.indexOf(a) - col.cromos.indexOf(b));
+      data = [...baseCards, ...specials];
     } else {
       data.sort((a, b) => {
         let va, vb;
@@ -1715,8 +1731,11 @@ function guardarCromo() {
   if (STATE.editingCromoId) {
     const c = getCromoById(STATE.editingCromoId);
     c.numero=num; c.nombre=nom; c.tipo=tipo; c.equipo=equipo; c.repetidos=rep; c.tengo=tengo;
+    // Solo actualizar fotos si el usuario puso una nueva o la borró explícitamente
     if (_fotoFront) c.fotoFront = _fotoFront;
+    else if (_fotoFrontDeleted) c.fotoFront = null;
     if (_fotoBack) c.fotoBack = _fotoBack;
+    else if (_fotoBackDeleted) c.fotoBack = null;
     addHistorial(STATE.currentColId, 'edit', 'Editado #' + num + ' ' + nom);
     toast('Cromo actualizado', '✅');
   } else {
@@ -1737,8 +1756,13 @@ function editCromo(id) {
   document.getElementById('c-rep').value = c.repetidos; document.getElementById('c-rep-val').textContent = c.repetidos;
   setModalTengo(c.tengo !== false);
   resetFotos();
+  // Cargar fotos existentes (resetFotos ya pone los flags a false)
   if (c.fotoFront) { _fotoFront = c.fotoFront; setFotoPreview('front', c.fotoFront); }
   if (c.fotoBack) { _fotoBack = c.fotoBack; setFotoPreview('back', c.fotoBack); }
+  if (c.fotoFront || c.fotoBack) {
+    const wrap = document.getElementById('foto-recorte-wrap');
+    if (wrap) wrap.style.display = 'flex';
+  }
   openModal('modal-cromo');
 }
 function askDelCromo(id) {
@@ -1892,15 +1916,20 @@ function exportExcel() {
 //  📷 FOTO DE CROMO + RECORTE DE FONDO
 // ══════════════════════════════════════════
 let _fotoFront = null, _fotoBack = null;
+// true = el usuario borró explícitamente la foto en este modal
+let _fotoFrontDeleted = false, _fotoBackDeleted = false;
 
 function resetFotos() {
   _fotoFront = null; _fotoBack = null;
+  _fotoFrontDeleted = false; _fotoBackDeleted = false;
   ['front','back'].forEach(side => {
     const prev = document.getElementById(`foto-${side}-preview`);
-    prev.innerHTML = '<span class="foto-icon">📷</span>';
-    document.getElementById(`foto-${side}-input`).value = '';
+    if (prev) prev.innerHTML = '<span class="foto-icon">📷</span>';
+    const inp = document.getElementById(`foto-${side}-input`);
+    if (inp) inp.value = '';
   });
-  document.getElementById('foto-recorte-wrap').style.display = 'none';
+  const wrap = document.getElementById('foto-recorte-wrap');
+  if (wrap) wrap.style.display = 'none';
   setRecorteStatus('');
 }
 
@@ -1910,13 +1939,15 @@ function setFotoPreview(side, dataUrl, sinFondo = false) {
 }
 
 function quitarFoto(side) {
-  if (side === 'front') _fotoFront = null; else _fotoBack = null;
+  if (side === 'front') { _fotoFront = null; _fotoFrontDeleted = true; }
+  else { _fotoBack = null; _fotoBackDeleted = true; }
   const prev = document.getElementById(`foto-${side}-preview`);
-  prev.innerHTML = '<span class="foto-icon">📷</span>';
-  document.getElementById(`foto-${side}-input`).value = '';
-  // Ocultar botón recortar si no hay ninguna foto
+  if (prev) prev.innerHTML = '<span class="foto-icon">📷</span>';
+  const inp = document.getElementById(`foto-${side}-input`);
+  if (inp) inp.value = '';
   if (!_fotoFront && !_fotoBack) {
-    document.getElementById('foto-recorte-wrap').style.display = 'none';
+    const wrap = document.getElementById('foto-recorte-wrap');
+    if (wrap) wrap.style.display = 'none';
     setRecorteStatus('');
   }
 }
@@ -2147,35 +2178,37 @@ function _buildWAText(colId) {
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
-  const repes = col.cromos.filter(c => c.repetidos > 0 && c.tengo !== false).map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
-  const faltas = col.cromos.filter(c => c.tengo === false).map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
 
-  // Guardar lista en Supabase con ID corto para QR manejable
-  const shareId = 'share_' + STATE.fichaColId.slice(0,8);
+  const repes = col.cromos
+    .filter(c => c.repetidos > 0 && c.tengo !== false)
+    .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
+  const faltas = col.cromos
+    .filter(c => c.tengo === false)
+    .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
+
+  // shareData contiene SOLO repes y faltas — nunca la colección completa
   const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, t: Date.now() };
-  let link = 'https://naarro07.github.io/Naarros-collection/?intercambio=' + encodeURIComponent(JSON.stringify(shareData));
+  const shareId = 'share_' + STATE.fichaColId.slice(0, 8);
+  let link = window.location.origin + window.location.pathname + '?share=' + shareId;
 
   try {
-    const shareId = 'share_' + STATE.fichaColId.slice(0,8);
     await window._fbSaveShare(shareId, shareData);
-    link = `https://naarro07.github.io/Naarros-collection/?share=${shareId}`;
-  } catch {}
+  } catch(e) {
+    // Fallback: link con datos inline (solo repes/faltas, no la colección)
+    const mini = { n: col.name, e: col.emoji, r: repes, f: faltas, t: Date.now() };
+    link = window.location.origin + window.location.pathname + '?intercambio=' + encodeURIComponent(JSON.stringify(mini));
+  }
 
   document.getElementById('share-link-input').value = link;
 
-  // QR fiable con goqr.me
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=L&margin=4&data=${encodeURIComponent(link)}`;
-  const qrImg = new Image();
-  qrImg.onload = () => {
-    document.getElementById('qr-container').innerHTML = `<img src="${qrUrl}" width="200" height="200" style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;">`;
-  };
-  qrImg.onerror = () => {
-    // Fallback: generar QR inline con canvas usando una librería CDN
-    document.getElementById('qr-container').innerHTML = `<div style="text-align:center;padding:16px;"><a href="${link}" target="_blank" style="color:var(--accent);font-size:13px;word-break:break-all;">${link}</a><p style="color:var(--text3);font-size:12px;margin-top:8px;">QR no disponible offline — usa el enlace</p></div>`;
-  };
-  qrImg.src = qrUrl;
+  document.getElementById('qr-container').innerHTML = `<img src="${qrUrl}" width="200" height="200"
+    style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;"
+    onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>QR no disponible — copia el enlace</p>'">`;
+
   const waText = _buildWAText(STATE.fichaColId);
-  const el = document.getElementById('wa-output-intercambio'); if (el) el.textContent = waText;
+  const el = document.getElementById('wa-output-intercambio');
+  if (el) el.textContent = waText;
   openModal('modal-intercambio');
 }
 function copiarEnlace() {
