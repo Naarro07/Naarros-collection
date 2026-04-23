@@ -46,6 +46,13 @@ window._fbShare = async (id, payload) => {
 // Señal de que Firebase está listo
 window._fbReady = true;
 window.dispatchEvent(new Event('fb-ready'));
+
+// Llamar initApp directamente desde el módulo si ya está definida
+// (evita race condition: el evento podría dispararse antes de que
+//  el listener del script principal esté registrado)
+if (typeof window._initAppReady === 'function') {
+  window._initAppReady();
+}
 </script>
 
 <style>
@@ -204,8 +211,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .grid-ph{font-size:36px;color:var(--text3);display:flex;align-items:center;justify-content:center;width:100%;height:100%}
 .grid-info{padding:10px 10px 8px;display:flex;flex-direction:column;gap:3px}
 .grid-num{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--accent);background:var(--glow);border-radius:5px;padding:1px 6px;display:inline-block;width:fit-content;margin-bottom:2px}
-.grid-name{font-weight:700;font-size:13px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.grid-sub{font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grid-name{font-weight:700;font-size:13px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical}.grid-sub{font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .grid-footer{display:flex;align-items:center;justify-content:space-between;padding:0 8px 8px;gap:4px}
 .grid-tengo-btn{flex:1;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;border-radius:20px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text3);padding:3px 6px;cursor:pointer;transition:all .15s;white-space:nowrap;display:flex;align-items:center;gap:4px;justify-content:center}
 .grid-tengo-btn.tengo{border-color:var(--green);color:var(--green);background:rgba(34,211,163,.1)}
@@ -818,21 +824,46 @@ function save() {
   _saveTimer = setTimeout(async () => {
     try { await idbSet('cols', STATE.cols); } catch {}
     if (!navigator.onLine) { setSyncStatus('offline'); _pendingSync = true; return; }
+
+    // FIX: comprobar tamaño antes de subir a Firestore (límite 1 MB por documento)
+    const payload = JSON.stringify(STATE.cols);
+    const sizeKB = Math.round(payload.length / 1024);
+    if (payload.length > 900000) {
+      setSyncStatus('error');
+      toast('Datos demasiado grandes (' + sizeKB + ' KB). Las fotos ocupan mucho espacio. Elimina algunas imágenes o descarga un backup.', '⚠️');
+      _pendingSync = true;
+      return;
+    }
+
     setSyncStatus('syncing');
     try { await window._fbSet(STATE.cols); setSyncStatus('ok'); _pendingSync = false; }
-    catch(e) { console.warn('Firebase save:', e); setSyncStatus('error'); _pendingSync = true; }
+    catch(e) {
+      console.warn('Firebase save:', e);
+      if (e && (String(e.message).includes('exceeds') || e.code === 'invalid-argument')) {
+        toast('Error Firebase: documento demasiado grande (' + sizeKB + ' KB). Reduce las fotos.', '⚠️');
+      } else {
+        toast('Error al sincronizar con Firebase. Datos guardados localmente.', '⚠️');
+      }
+      setSyncStatus('error'); _pendingSync = true;
+    }
   }, 600);
 }
 
 async function load() {
   try { await openIDB(); } catch {}
-  // Local primero (rápido)
+
+  // ── PASO 1: datos locales → mostrar UI inmediatamente, sin esperar a Firebase ──
   try {
     const local = await idbGet('cols');
-    if (local && Array.isArray(local)) { STATE.cols = local; setSyncStatus('offline'); renderHome(); }
+    if (local && Array.isArray(local)) {
+      STATE.cols = local;
+      renderHome();
+    }
   } catch {}
-  // Luego Firebase
-  if (!navigator.onLine) { setSyncStatus('offline'); hideSplash(); return; }
+  hideSplash(); // <-- el splash desaparece aquí siempre, con o sin datos
+
+  // ── PASO 2: Firebase en segundo plano (no bloquea la UI) ──
+  if (!navigator.onLine) { setSyncStatus('offline'); return; }
   setSyncStatus('syncing');
   try {
     const remote = await window._fbGet();
@@ -840,12 +871,18 @@ async function load() {
       STATE.cols = remote;
       try { await idbSet('cols', remote); } catch {}
       setSyncStatus('ok');
+      renderHome(); // actualizar si Firebase tenía datos más nuevos
     } else if (STATE.cols.length > 0) {
+      // Firebase vacío pero tenemos datos locales → subir
       await window._fbSet(STATE.cols);
       setSyncStatus('ok');
-    } else { setSyncStatus('ok'); }
-  } catch(e) { console.warn('Firebase load:', e); setSyncStatus(STATE.cols.length ? 'offline' : 'error'); }
-  renderHome(); hideSplash();
+    } else {
+      setSyncStatus('ok');
+    }
+  } catch(e) {
+    console.warn('Firebase load:', e);
+    setSyncStatus(STATE.cols.length ? 'offline' : 'error');
+  }
 }
 
 window.addEventListener('online', async () => {
@@ -1805,12 +1842,27 @@ function cerrarPWA(){$('pwa-banner').classList.remove('show');try{localStorage.s
 // ═══════════════════════════════════════════════════════
 function startNew() { $('modal-start') && $('modal-start').classList.remove('show'); }
 
-// Esperar a Firebase antes de cargar
+// ── FIX: race condition entre módulo ES de Firebase y este script ──
+// Los módulos ES son siempre diferidos; pueden ejecutarse DESPUÉS de
+// este bloque o ANTES (si el parser ya los finalizó). Para garantizar
+// ejecución única sin importar el orden, usamos un flag + tres vías:
+//   1. El módulo llama window._initAppReady() cuando Firebase está listo.
+//   2. El evento 'fb-ready' como fallback (compatibilidad).
+//   3. Timeout de 8 s: si Firebase no carga, usamos datos locales (IDB).
+let _appStarted = false;
 function initApp() {
+  if (_appStarted) return;
+  _appStarted = true;
   setupDropZone(); initPWA(); renderHome(); load();
 }
-if (window._fbReady) { initApp(); }
-else { window.addEventListener('fb-ready', initApp, { once: true }); }
+window._initAppReady = initApp;
+window.addEventListener('fb-ready', initApp, { once: true });
+setTimeout(() => {
+  if (!_appStarted) {
+    console.warn('Firebase timeout — iniciando con datos locales (IndexedDB)');
+    initApp();
+  }
+}, 8000);
 </script>
 </body>
 </html>
