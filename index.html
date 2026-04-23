@@ -46,13 +46,6 @@ window._fbShare = async (id, payload) => {
 // Señal de que Firebase está listo
 window._fbReady = true;
 window.dispatchEvent(new Event('fb-ready'));
-
-// Llamar initApp directamente desde el módulo si ya está definida
-// (evita race condition: el evento podría dispararse antes de que
-//  el listener del script principal esté registrado)
-if (typeof window._initAppReady === 'function') {
-  window._initAppReady();
-}
 </script>
 
 <style>
@@ -825,28 +818,9 @@ function save() {
   _saveTimer = setTimeout(async () => {
     try { await idbSet('cols', STATE.cols); } catch {}
     if (!navigator.onLine) { setSyncStatus('offline'); _pendingSync = true; return; }
-
-    // FIX: comprobar tamaño antes de subir a Firestore (límite 1 MB por documento)
-    const payload = JSON.stringify(STATE.cols);
-    const sizeKB = Math.round(payload.length / 1024);
-    if (payload.length > 900000) {
-      setSyncStatus('error');
-      toast('Datos demasiado grandes (' + sizeKB + ' KB). Las fotos ocupan mucho espacio. Elimina algunas imágenes o descarga un backup.', '⚠️');
-      _pendingSync = true;
-      return;
-    }
-
     setSyncStatus('syncing');
     try { await window._fbSet(STATE.cols); setSyncStatus('ok'); _pendingSync = false; }
-    catch(e) {
-      console.warn('Firebase save:', e);
-      if (e && (String(e.message).includes('exceeds') || e.code === 'invalid-argument')) {
-        toast('Error Firebase: documento demasiado grande (' + sizeKB + ' KB). Reduce las fotos.', '⚠️');
-      } else {
-        toast('Error al sincronizar con Firebase. Datos guardados localmente.', '⚠️');
-      }
-      setSyncStatus('error'); _pendingSync = true;
-    }
+    catch(e) { console.warn('Firebase save:', e); setSyncStatus('error'); _pendingSync = true; }
   }, 600);
 }
 
@@ -1831,27 +1805,12 @@ function cerrarPWA(){$('pwa-banner').classList.remove('show');try{localStorage.s
 // ═══════════════════════════════════════════════════════
 function startNew() { $('modal-start') && $('modal-start').classList.remove('show'); }
 
-// ── FIX: race condition entre módulo ES de Firebase y este script ──
-// Los módulos ES son siempre diferidos; pueden ejecutarse DESPUÉS de
-// este bloque o ANTES (si el parser ya los finalizó). Para garantizar
-// ejecución única sin importar el orden, usamos un flag + tres vías:
-//   1. El módulo llama window._initAppReady() cuando Firebase está listo.
-//   2. El evento 'fb-ready' como fallback (compatibilidad).
-//   3. Timeout de 8 s: si Firebase no carga, usamos datos locales (IDB).
-let _appStarted = false;
+// Esperar a Firebase antes de cargar
 function initApp() {
-  if (_appStarted) return;
-  _appStarted = true;
   setupDropZone(); initPWA(); renderHome(); load();
 }
-window._initAppReady = initApp;
-window.addEventListener('fb-ready', initApp, { once: true });
-setTimeout(() => {
-  if (!_appStarted) {
-    console.warn('Firebase timeout — iniciando con datos locales (IndexedDB)');
-    initApp();
-  }
-}, 8000);
+if (window._fbReady) { initApp(); }
+else { window.addEventListener('fb-ready', initApp, { once: true }); }
 </script>
 </body>
 </html>
