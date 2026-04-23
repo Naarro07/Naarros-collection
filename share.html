@@ -262,7 +262,12 @@ async function init() {
   if (!shareId) { showError(); return; }
 
   if (!window._fbReady) {
-    await new Promise(res => window.addEventListener('fb-ready', res, { once: true }));
+    // FIX: timeout de seguridad — si Firebase no carga en 10s, mostrar error
+    const fbTimeout = setTimeout(() => {
+      console.warn('Firebase timeout en share.html');
+      showError();
+    }, 10000);
+    await new Promise(res => window.addEventListener('fb-ready', () => { clearTimeout(fbTimeout); res(); }, { once: true }));
   }
 
   try {
