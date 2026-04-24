@@ -150,8 +150,23 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
 .gstat-val { font-size: 22px; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
 .gstat-lbl { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }
 
-.storage-info { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); padding: 6px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; }
-.storage-info .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.storage-info { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); padding: 6px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 20px; transition: border-color 0.3s, background 0.3s; }
+.storage-info .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; transition: background 0.3s; }
+.storage-info.syncing { border-color: rgba(251,191,36,0.4); background: rgba(251,191,36,0.06); }
+.storage-info.sync-ok { border-color: rgba(34,211,163,0.4); background: rgba(34,211,163,0.06); }
+.storage-info.sync-error { border-color: rgba(255,79,106,0.4); background: rgba(255,79,106,0.06); }
+.storage-info.sync-pending { border-color: rgba(251,191,36,0.3); background: rgba(251,191,36,0.04); }
+/* Spinner animado para sincronización */
+.sync-spinner { width: 12px; height: 12px; border: 2px solid rgba(251,191,36,0.3); border-top-color: var(--yellow); border-radius: 50%; flex-shrink: 0; animation: syncSpin 0.7s linear infinite; display: none; }
+.storage-info.syncing .sync-spinner { display: block; }
+.storage-info.syncing .dot { display: none; }
+@keyframes syncSpin { to { transform: rotate(360deg); } }
+/* Check animado al terminar */
+@keyframes syncDone { 0%{transform:scale(0.5);opacity:0} 60%{transform:scale(1.2)} 100%{transform:scale(1);opacity:1} }
+.storage-info.sync-ok .dot { animation: syncDone 0.35s ease-out; }
+/* Pulso para cola pendiente */
+@keyframes pendingPulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.storage-info.sync-pending .dot { animation: pendingPulse 1.8s ease-in-out infinite; }
 
 /* ─── BUTTONS ─── */
 .btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 18px; border-radius: var(--radius-sm); border: none; cursor: pointer; font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600; transition: all 0.18s; white-space: nowrap; }
@@ -515,7 +530,7 @@ select.form-input { cursor: pointer; }
     <div class="home-actions">
       <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
-      <div class="storage-info"><div class="dot"></div><span id="storage-label">Cargando…</span></div>
+      <div class="storage-info" id="storage-info"><div class="sync-spinner"></div><div class="dot"></div><span id="storage-label">Cargando…</span></div>
       <button class="btn btn-secondary" onclick="openModal('modal-catalogo');renderCatalogo()">📚 Catálogo</button>
       <button class="btn btn-primary" onclick="openModal('modal-nueva-col')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
@@ -938,45 +953,85 @@ function applyTheme(theme) {
 })();
 
 // ══════════════════════════════════════════
-//  ☁️ SYNC STATUS
+//  ☁️ SYNC STATUS (visual mejorado)
 // ══════════════════════════════════════════
+let _syncOkTimer = null;
 function setSyncStatus(status) {
   const dot = document.querySelector('.storage-info .dot');
   const label = document.getElementById('storage-label');
-  if (!dot || !label) return;
+  const wrap = document.getElementById('storage-info');
+  if (!dot || !label || !wrap) return;
+
+  // Quitar todas las clases de estado
+  wrap.classList.remove('syncing', 'sync-ok', 'sync-error', 'sync-pending');
+  clearTimeout(_syncOkTimer);
+
   const map = {
-    syncing: { color: 'var(--yellow)', text: '☁️ Sincronizando…' },
-    ok:      { color: 'var(--green)',  text: '☁️ Firebase · Sincronizado' },
-    offline: { color: 'var(--yellow)', text: '📡 Offline · Local' },
-    error:   { color: 'var(--red)',    text: '⚠️ Error al sincronizar' },
+    syncing: { color: 'var(--yellow)', text: '☁️ Sincronizando…',        cls: 'syncing' },
+    ok:      { color: 'var(--green)',  text: '☁️ Sincronizado ✓',         cls: 'sync-ok' },
+    offline: { color: 'var(--yellow)', text: '📡 Sin conexión · Local',   cls: '' },
+    error:   { color: 'var(--red)',    text: '⚠️ Error — reintentando…',  cls: 'sync-error' },
+    pending: { color: 'var(--yellow)', text: '⏳ Pendiente de subir…',    cls: 'sync-pending' },
   };
   const s = map[status] || map.ok;
   dot.style.background = s.color;
   label.textContent = s.text;
+  if (s.cls) wrap.classList.add(s.cls);
+
+  // Tras 3s en "ok", volver al estilo neutro con texto corto
+  if (status === 'ok') {
+    _syncOkTimer = setTimeout(() => {
+      wrap.classList.remove('sync-ok');
+      label.textContent = '☁️ Firebase · OK';
+    }, 3000);
+  }
 }
 
 // ══════════════════════════════════════════
-//  INDEXEDDB (caché offline)
+//  INDEXEDDB (caché offline + cola sync)
 // ══════════════════════════════════════════
-const DB_NAME = 'NaarrosCollection', DB_VER = 1, STORE = 'data';
+const DB_NAME = 'NaarrosCollection', DB_VER = 2, STORE = 'data', QUEUE_STORE = 'syncQueue';
 let db = null;
 function openDB() {
   return new Promise((res, rej) => {
     const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE);
+      if (!d.objectStoreNames.contains(QUEUE_STORE)) d.createObjectStore(QUEUE_STORE);
+    };
     req.onsuccess = e => { db = e.target.result; res(); };
     req.onerror = () => rej(req.error);
   });
 }
-function dbGet(key) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readonly').objectStore(STORE).get(key); req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); }
-function dbSet(key, val) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readwrite').objectStore(STORE).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
+function dbGet(key, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readonly').objectStore(store).get(key); req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); }
+function dbSet(key, val, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readwrite').objectStore(store).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
+function dbDel(key, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readwrite').objectStore(store).delete(key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
+
+// ── Cola de sincronización persistente ──
+// Guardamos en IndexedDB el "trabajo pendiente" para sobrevivir cierres de pestaña
+const SYNC_QUEUE_KEY = 'pending_upload';
+
+async function markSyncPending(payload) {
+  try { await dbSet(SYNC_QUEUE_KEY, { payload, ts: Date.now() }, QUEUE_STORE); } catch {}
+}
+async function clearSyncPending() {
+  try { await dbDel(SYNC_QUEUE_KEY, QUEUE_STORE); } catch {}
+}
+async function getSyncPending() {
+  try { return await dbGet(SYNC_QUEUE_KEY, QUEUE_STORE); } catch { return null; }
+}
 
 // ══════════════════════════════════════════
-//  SAVE / LOAD — seguro, con fotos en Firebase comprimidas
+//  SAVE / LOAD — con cola persistente y reintentos
 // ══════════════════════════════════════════
 let _saveTimer = null;
 let _pendingSync = false;
 let _localVersion = 0;
+let _retryTimer = null;
+let _retryCount = 0;
+const MAX_RETRIES = 8;
+const RETRY_DELAYS = [2000, 4000, 8000, 15000, 30000, 60000, 120000, 300000]; // backoff
 
 // Comprimir foto para Firebase (más agresivo: 400px max, quality 0.6 → ~30-60KB)
 function comprimirParaCloud(dataUrl) {
@@ -1012,6 +1067,52 @@ async function prepararParaCloud(colecciones) {
   return out;
 }
 
+// Intentar subir a Firebase. Si falla, programa reintento.
+async function _attemptFirebaseUpload(colecciones, version, savedAt, isRetry=false) {
+  if (!navigator.onLine) {
+    setSyncStatus('pending');
+    _pendingSync = true;
+    await markSyncPending({ colecciones: null, version, savedAt }); // señal de que hay algo pendiente
+    return false;
+  }
+  setSyncStatus('syncing');
+  try {
+    const cloudCols = await prepararParaCloud(colecciones);
+    await window._fbSetData({ colecciones: cloudCols, version, savedAt });
+    setSyncStatus('ok');
+    _pendingSync = false;
+    _retryCount = 0;
+    clearTimeout(_retryTimer);
+    await clearSyncPending();
+    if (isRetry) toast('¡Sincronización completada! ☁️✅', '✅');
+    return true;
+  } catch(e) {
+    console.warn('Firebase save error:', e.message || e);
+    _pendingSync = true;
+    // Guardar la señal de que hay sync pendiente
+    await markSyncPending({ version, savedAt, ts: Date.now() });
+    if (_retryCount < MAX_RETRIES) {
+      const delay = RETRY_DELAYS[_retryCount] || 300000;
+      _retryCount++;
+      setSyncStatus('error');
+      console.log(`Reintento ${_retryCount}/${MAX_RETRIES} en ${delay/1000}s`);
+      clearTimeout(_retryTimer);
+      _retryTimer = setTimeout(() => _retryUpload(), delay);
+    } else {
+      setSyncStatus('pending');
+      toast('No se pudo sincronizar. Se reintentará cuando vuelvas a abrir la app.', '⚠️', 5000);
+    }
+    return false;
+  }
+}
+
+// Reintento programado — usa el estado actual de STATE
+async function _retryUpload() {
+  if (!_pendingSync) return;
+  console.log('🔄 Reintentando sincronización con Firebase…');
+  await _attemptFirebaseUpload(STATE.colecciones, _localVersion, Date.now(), true);
+}
+
 function save() {
   _localVersion++;
   clearTimeout(_saveTimer);
@@ -1021,27 +1122,17 @@ function save() {
   const fullPayload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
   dbSet('colpro_' + uid, fullPayload).catch(() => {});
 
-  // 2. Firebase con debounce: fotos comprimidas
+  // 2. Firebase con debounce 1.2s: agrupa cambios rápidos en una sola subida
+  //    Si hay un reintento pendiente, lo cancelamos y esperamos al debounce actual
+  clearTimeout(_retryTimer);
   _saveTimer = setTimeout(async () => {
-    if (!navigator.onLine) { setSyncStatus('offline'); _pendingSync = true; return; }
-    setSyncStatus('syncing');
-    try {
-      const cloudCols = await prepararParaCloud(STATE.colecciones);
-      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: fullPayload.savedAt });
-      setSyncStatus('ok');
-      _pendingSync = false;
-    } catch(e) {
-      console.warn('Firebase save error:', e.message || e);
-      setSyncStatus('error');
-      _pendingSync = true;
-    }
+    await _attemptFirebaseUpload(STATE.colecciones, _localVersion, fullPayload.savedAt);
   }, 1200);
 }
 
 window.addEventListener('beforeunload', () => {
   try {
     const uid = MY_UID;
-    // Guardar timestamp para que al volver sepamos que tenemos datos locales recientes
     localStorage.setItem('nc_localts_' + uid, String(_localVersion + ':' + Date.now()));
   } catch {}
 });
@@ -1049,19 +1140,17 @@ window.addEventListener('beforeunload', () => {
 window.addEventListener('online', async () => {
   document.getElementById('offline-badge')?.classList.remove('show');
   if (_pendingSync) {
-    setSyncStatus('syncing');
-    try {
-      const cloudCols = await prepararParaCloud(STATE.colecciones);
-      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: Date.now() });
-      setSyncStatus('ok'); _pendingSync = false;
-      toast('Datos sincronizados ☁️', '✅');
-    } catch(e) { console.warn('sync online error:', e.message||e); setSyncStatus('error'); }
+    _retryCount = 0; // reset contador al volver online
+    toast('Conexión restaurada — sincronizando…', '☁️');
+    await _attemptFirebaseUpload(STATE.colecciones, _localVersion, Date.now(), true);
   }
 });
 window.addEventListener('offline', () => {
   setSyncStatus('offline');
+  _pendingSync = true;
   document.getElementById('offline-badge')?.classList.add('show');
 });
+
 
 // ══════════════════════════════════════════
 //  LOAD
@@ -1088,8 +1177,18 @@ async function load() {
     document.getElementById('modal-start')?.classList.remove('show');
   }
 
-  // 2. Firebase: solo si hay conexión Y no tenemos datos locales recientes
-  if (!navigator.onLine) { setSyncStatus('offline'); return; }
+  // 1b. Comprobar si había sync pendiente de sesión anterior
+  const queuedItem = await getSyncPending();
+  if (queuedItem) {
+    _pendingSync = true;
+    console.log('📋 Sync pendiente detectado de sesión anterior');
+  }
+
+  // 2. Firebase: solo si hay conexión
+  if (!navigator.onLine) {
+    setSyncStatus(_pendingSync ? 'pending' : 'offline');
+    return;
+  }
 
   setSyncStatus('syncing');
   try {
@@ -1098,11 +1197,11 @@ async function load() {
     if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
       // Firebase vacío o error → subir lo que tenemos localmente
       if (STATE.colecciones.length > 0) {
-        const cloudCols = await prepararParaCloud(STATE.colecciones);
-        await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: localPayload?.savedAt || Date.now() });
-        toast('Datos subidos a Firebase ☁️', '✅');
+        await _attemptFirebaseUpload(STATE.colecciones, _localVersion, localPayload?.savedAt || Date.now(), false);
+        if (!_pendingSync) toast('Datos subidos a Firebase ☁️', '✅');
+      } else {
+        setSyncStatus('ok');
       }
-      setSyncStatus('ok');
       return;
     }
 
@@ -1113,22 +1212,30 @@ async function load() {
       // Firebase más nuevo → usarlo (ya trae fotos comprimidas)
       STATE.colecciones = remotePayload.colecciones;
       _localVersion = remotePayload.version || 0;
-      // Guardar localmente (con fotos de Firebase, que son comprimidas)
       try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs }); } catch {}
       if (STATE.currentColId) renderCromos(); else renderHome();
       document.getElementById('modal-start')?.classList.remove('show');
+      await clearSyncPending();
+      _pendingSync = false;
+      setSyncStatus('ok');
     } else if (localTs >= remoteTs && STATE.colecciones.length > 0) {
-      // Local igual o más nuevo → subir a Firebase
-      const cloudCols = await prepararParaCloud(STATE.colecciones);
-      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: localTs || Date.now() }).catch(e => console.warn('upload local:', e.message));
+      // Local igual o más nuevo → subir a Firebase (puede haber cambios no subidos)
+      await _attemptFirebaseUpload(STATE.colecciones, _localVersion, localTs || Date.now(), _pendingSync);
+    } else {
+      setSyncStatus('ok');
     }
 
-    setSyncStatus('ok');
   } catch(e) {
     console.warn('Firebase load error:', e.message || e);
-    // NUNCA borrar datos locales por un error de Firebase
-    setSyncStatus(STATE.colecciones.length ? 'error' : 'error');
+    setSyncStatus('error');
     toast('Sin conexión con Firebase — usando datos locales', '⚠️');
+    // Programar reintento
+    if (_retryCount < MAX_RETRIES) {
+      const delay = RETRY_DELAYS[_retryCount] || 300000;
+      _retryCount++;
+      _pendingSync = true;
+      _retryTimer = setTimeout(() => _retryUpload(), delay);
+    }
   }
 }
 
@@ -2247,10 +2354,10 @@ function importarDesdeDrive() {
 // ══════════════════════════════════════════
 //  TOAST
 // ══════════════════════════════════════════
-function toast(msg, icon='ℹ️', type='') {
+function toast(msg, icon='ℹ️', duration=3000) {
   const c=document.getElementById('toast-container'), t=document.createElement('div');
-  t.className=`toast ${type}`; t.innerHTML=`<span>${icon}</span><span>${msg}</span>`; c.appendChild(t);
-  setTimeout(()=>{ t.style.animation='toastOut 0.3s forwards'; setTimeout(()=>t.remove(),300); }, 3000);
+  t.className=`toast`; t.innerHTML=`<span>${icon}</span><span>${msg}</span>`; c.appendChild(t);
+  setTimeout(()=>{ t.style.animation='toastOut 0.3s forwards'; setTimeout(()=>t.remove(),300); }, duration);
 }
 
 // ══════════════════════════════════════════
