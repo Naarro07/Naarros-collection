@@ -972,50 +972,78 @@ function dbGet(key) { return new Promise((res, rej) => { const req = db.transact
 function dbSet(key, val) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readwrite').objectStore(STORE).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
 
 // ══════════════════════════════════════════
-//  SAVE — local + Firebase con versioning
+//  SAVE / LOAD — seguro, con fotos en Firebase comprimidas
 // ══════════════════════════════════════════
 let _saveTimer = null;
 let _pendingSync = false;
-let _localVersion = 0; // incrementa con cada cambio local
+let _localVersion = 0;
+
+// Comprimir foto para Firebase (más agresivo: 400px max, quality 0.6 → ~30-60KB)
+function comprimirParaCloud(dataUrl) {
+  return new Promise(resolve => {
+    if (!dataUrl) { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 400;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) { const r = Math.min(MAX/w, MAX/h); w = Math.round(w*r); h = Math.round(h*r); }
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.6));
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+// Preparar colecciones para Firebase: fotos comprimidas
+async function prepararParaCloud(colecciones) {
+  const out = [];
+  for (const col of colecciones) {
+    const cromos = [];
+    for (const c of col.cromos) {
+      const cc = { ...c };
+      if (cc.fotoFront) cc.fotoFront = await comprimirParaCloud(cc.fotoFront);
+      if (cc.fotoBack)  cc.fotoBack  = await comprimirParaCloud(cc.fotoBack);
+      cromos.push(cc);
+    }
+    out.push({ ...col, cromos });
+  }
+  return out;
+}
 
 function save() {
   _localVersion++;
-  const version = _localVersion;
   clearTimeout(_saveTimer);
 
-  // Guardar local INMEDIATAMENTE (sin delay) para no perder datos
+  // 1. Guardar COMPLETO en IndexedDB inmediatamente (con fotos originales)
   const uid = MY_UID;
-  const payload = { colecciones: STATE.colecciones, version, savedAt: Date.now() };
-  dbSet('colpro_' + uid, payload).catch(() => {});
+  const fullPayload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
+  dbSet('colpro_' + uid, fullPayload).catch(() => {});
 
-  // Firebase con debounce para no saturar
+  // 2. Firebase con debounce: fotos comprimidas
   _saveTimer = setTimeout(async () => {
     if (!navigator.onLine) { setSyncStatus('offline'); _pendingSync = true; return; }
     setSyncStatus('syncing');
     try {
-      await window._fbSetData(payload);
+      const cloudCols = await prepararParaCloud(STATE.colecciones);
+      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: fullPayload.savedAt });
       setSyncStatus('ok');
       _pendingSync = false;
     } catch(e) {
-      console.warn('Firebase save error:', e);
+      console.warn('Firebase save error:', e.message || e);
       setSyncStatus('error');
       _pendingSync = true;
     }
-  }, 800);
+  }, 1200);
 }
 
-// Guardar antes de cerrar la pestaña
 window.addEventListener('beforeunload', () => {
-  if (_pendingSync) {
+  try {
     const uid = MY_UID;
-    const payload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
-    // sendBeacon no admite JSON directamente pero sí Blob
-    try {
-      navigator.sendBeacon && navigator.sendBeacon('/beacon', new Blob([JSON.stringify(payload)]));
-    } catch {}
-    // Al menos guardamos local de forma síncrona aproximada
-    try { localStorage.setItem('nc_emergency_' + uid, JSON.stringify(payload)); } catch {}
-  }
+    // Guardar timestamp para que al volver sepamos que tenemos datos locales recientes
+    localStorage.setItem('nc_localts_' + uid, String(_localVersion + ':' + Date.now()));
+  } catch {}
 });
 
 window.addEventListener('online', async () => {
@@ -1023,13 +1051,11 @@ window.addEventListener('online', async () => {
   if (_pendingSync) {
     setSyncStatus('syncing');
     try {
-      const uid = MY_UID;
-      const payload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
-      await window._fbSetData(payload);
-      setSyncStatus('ok');
-      _pendingSync = false;
+      const cloudCols = await prepararParaCloud(STATE.colecciones);
+      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: Date.now() });
+      setSyncStatus('ok'); _pendingSync = false;
       toast('Datos sincronizados ☁️', '✅');
-    } catch { setSyncStatus('error'); }
+    } catch(e) { console.warn('sync online error:', e.message||e); setSyncStatus('error'); }
   }
 });
 window.addEventListener('offline', () => {
@@ -1038,72 +1064,74 @@ window.addEventListener('offline', () => {
 });
 
 // ══════════════════════════════════════════
-//  LOAD — local instantáneo + Firebase con merge inteligente
+//  LOAD
 // ══════════════════════════════════════════
 async function load() {
   const uid = MY_UID;
   try { await openDB(); } catch {}
 
-  // 1. Cargar local primero → disponible instantáneamente
+  // 1. Cargar local SIEMPRE primero (tiene fotos originales, es la fuente de verdad)
   let localPayload = null;
   try {
-    localPayload = await dbGet('colpro_' + uid);
-    if (Array.isArray(localPayload)) localPayload = { colecciones: localPayload, version: 0, savedAt: 0 };
-  } catch {}
-
-  // Recuperar guardado de emergencia si es más reciente
-  try {
-    const emergency = localStorage.getItem('nc_emergency_' + uid);
-    if (emergency) {
-      const e = JSON.parse(emergency);
-      if (!localPayload || e.savedAt > (localPayload.savedAt || 0)) localPayload = e;
-      localStorage.removeItem('nc_emergency_' + uid);
+    const raw = await dbGet('colpro_' + uid);
+    if (raw && Array.isArray(raw)) {
+      localPayload = { colecciones: raw, version: 0, savedAt: 0 };
+    } else if (raw && Array.isArray(raw.colecciones)) {
+      localPayload = raw;
     }
   } catch {}
 
-  if (localPayload?.colecciones && Array.isArray(localPayload.colecciones)) {
+  if (localPayload?.colecciones?.length) {
     STATE.colecciones = localPayload.colecciones;
     _localVersion = localPayload.version || 0;
     setSyncStatus('offline');
-    if (STATE.colecciones.length > 0) document.getElementById('modal-start')?.classList.remove('show');
+    document.getElementById('modal-start')?.classList.remove('show');
   }
 
-  // 2. Firebase en segundo plano — sin bloquear el arranque
+  // 2. Firebase: solo si hay conexión Y no tenemos datos locales recientes
   if (!navigator.onLine) { setSyncStatus('offline'); return; }
 
   setSyncStatus('syncing');
   try {
     const remotePayload = await window._fbGetData();
-    const remote = Array.isArray(remotePayload)
-      ? { colecciones: remotePayload, version: 0, savedAt: 0 }
-      : remotePayload;
 
-    if (remote?.colecciones && Array.isArray(remote.colecciones)) {
-      const localTs = localPayload?.savedAt || 0;
-      const remoteTs = remote.savedAt || 0;
-
-      if (remoteTs >= localTs) {
-        STATE.colecciones = remote.colecciones;
-        _localVersion = remote.version || 0;
-        try { await dbSet('colpro_' + uid, remote); } catch {}
-      } else {
-        const payload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: localTs };
-        await window._fbSetData(payload).catch(() => {});
+    if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
+      // Firebase vacío o error → subir lo que tenemos localmente
+      if (STATE.colecciones.length > 0) {
+        const cloudCols = await prepararParaCloud(STATE.colecciones);
+        await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: localPayload?.savedAt || Date.now() });
+        toast('Datos subidos a Firebase ☁️', '✅');
       }
-    } else if (STATE.colecciones.length > 0) {
-      const payload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
-      await window._fbSetData(payload).catch(() => {});
+      setSyncStatus('ok');
+      return;
+    }
+
+    const localTs  = localPayload?.savedAt || 0;
+    const remoteTs = remotePayload.savedAt || 0;
+
+    if (remoteTs > localTs && remotePayload.colecciones.length > 0) {
+      // Firebase más nuevo → usarlo (ya trae fotos comprimidas)
+      STATE.colecciones = remotePayload.colecciones;
+      _localVersion = remotePayload.version || 0;
+      // Guardar localmente (con fotos de Firebase, que son comprimidas)
+      try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs }); } catch {}
+      if (STATE.currentColId) renderCromos(); else renderHome();
+      document.getElementById('modal-start')?.classList.remove('show');
+    } else if (localTs >= remoteTs && STATE.colecciones.length > 0) {
+      // Local igual o más nuevo → subir a Firebase
+      const cloudCols = await prepararParaCloud(STATE.colecciones);
+      await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: localTs || Date.now() }).catch(e => console.warn('upload local:', e.message));
     }
 
     setSyncStatus('ok');
-    // Actualizar vista según dónde esté el usuario sin sacarle de donde está
-    if (STATE.currentColId) renderCromos(); else renderHome();
-    if (STATE.colecciones.length > 0) document.getElementById('modal-start')?.classList.remove('show');
   } catch(e) {
-    console.warn('Firebase load error:', e);
-    setSyncStatus(STATE.colecciones.length ? 'offline' : 'error');
+    console.warn('Firebase load error:', e.message || e);
+    // NUNCA borrar datos locales por un error de Firebase
+    setSyncStatus(STATE.colecciones.length ? 'error' : 'error');
+    toast('Sin conexión con Firebase — usando datos locales', '⚠️');
   }
 }
+
 
 // ══════════════════════════════════════════
 //  DEBOUNCE BÚSQUEDA
