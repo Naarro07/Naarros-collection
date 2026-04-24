@@ -1061,14 +1061,26 @@ async function _doFirebaseUpload(isRetry=false) {
   setSyncStatus('syncing');
   try {
     const cloudCols = await prepararParaCloud(STATE.colecciones);
+
+    // Diagnóstico de tamaño antes de subir
+    const jsonStr = JSON.stringify(cloudCols);
+    const sizeKB = Math.round(jsonStr.length / 1024);
+    console.log(`📤 Subiendo a Firebase: ${sizeKB} KB (${cloudCols.reduce((s,c)=>s+c.cromos.length,0)} cromos)`);
+    if (sizeKB > 900) {
+      console.warn(`⚠️ Tamaño cercano al límite de Firestore (1MB): ${sizeKB}KB`);
+      toast(`⚠️ Colección grande (${sizeKB}KB) — comprimiendo más…`, '⚠️');
+    }
+
     await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: Date.now() });
+    console.log(`✅ Firebase OK — ${sizeKB}KB subidos`);
     setSyncStatus('ok');
     _pendingSync = false;
     _retryCount = 0;
     clearTimeout(_retryTimer);
     if (isRetry) toast('Sincronización completada ☁️', '✅');
   } catch(e) {
-    console.warn('Firebase save error:', e.message || e);
+    const msg = e?.message || String(e);
+    console.error('❌ Firebase save error:', msg, e);
     _pendingSync = true;
     if (_retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAYS[_retryCount] || 180000;
@@ -1077,7 +1089,6 @@ async function _doFirebaseUpload(isRetry=false) {
       clearTimeout(_retryTimer);
       _retryTimer = setTimeout(() => _doFirebaseUpload(true), delay);
     } else {
-      // Agotados los reintentos en esta sesión — marcar pendiente, se intentará al reabrir
       setSyncStatus('pending');
       try { localStorage.setItem('nc_sync_pending', '1'); } catch {}
     }
