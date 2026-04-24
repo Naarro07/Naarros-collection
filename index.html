@@ -990,7 +990,7 @@ function setSyncStatus(status) {
 // ══════════════════════════════════════════
 //  INDEXEDDB (caché offline + cola sync)
 // ══════════════════════════════════════════
-const DB_NAME = 'NaarrosCollection', DB_VER = 2, STORE = 'data', QUEUE_STORE = 'syncQueue';
+const DB_NAME = 'NaarrosCollection', DB_VER = 1, STORE = 'data';
 let db = null;
 function openDB() {
   return new Promise((res, rej) => {
@@ -998,42 +998,26 @@ function openDB() {
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE);
-      if (!d.objectStoreNames.contains(QUEUE_STORE)) d.createObjectStore(QUEUE_STORE);
     };
     req.onsuccess = e => { db = e.target.result; res(); };
     req.onerror = () => rej(req.error);
   });
 }
-function dbGet(key, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readonly').objectStore(store).get(key); req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); }
-function dbSet(key, val, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readwrite').objectStore(store).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
-function dbDel(key, store=STORE) { return new Promise((res, rej) => { const req = db.transaction(store,'readwrite').objectStore(store).delete(key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
-
-// ── Cola de sincronización persistente ──
-// Guardamos en IndexedDB el "trabajo pendiente" para sobrevivir cierres de pestaña
-const SYNC_QUEUE_KEY = 'pending_upload';
-
-async function markSyncPending(payload) {
-  try { await dbSet(SYNC_QUEUE_KEY, { payload, ts: Date.now() }, QUEUE_STORE); } catch {}
-}
-async function clearSyncPending() {
-  try { await dbDel(SYNC_QUEUE_KEY, QUEUE_STORE); } catch {}
-}
-async function getSyncPending() {
-  try { return await dbGet(SYNC_QUEUE_KEY, QUEUE_STORE); } catch { return null; }
-}
+function dbGet(key) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readonly').objectStore(STORE).get(key); req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); }
+function dbSet(key, val) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readwrite').objectStore(STORE).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
 
 // ══════════════════════════════════════════
-//  SAVE / LOAD — con cola persistente y reintentos
+//  SAVE / LOAD — con reintentos automáticos
 // ══════════════════════════════════════════
 let _saveTimer = null;
 let _pendingSync = false;
 let _localVersion = 0;
 let _retryTimer = null;
 let _retryCount = 0;
-const MAX_RETRIES = 8;
-const RETRY_DELAYS = [2000, 4000, 8000, 15000, 30000, 60000, 120000, 300000]; // backoff
+const MAX_RETRIES = 6;
+const RETRY_DELAYS = [3000, 8000, 20000, 45000, 90000, 180000];
 
-// Comprimir foto para Firebase (más agresivo: 400px max, quality 0.6 → ~30-60KB)
+// Comprimir foto para Firebase (400px max, quality 0.6)
 function comprimirParaCloud(dataUrl) {
   return new Promise(resolve => {
     if (!dataUrl) { resolve(null); return; }
@@ -1067,82 +1051,62 @@ async function prepararParaCloud(colecciones) {
   return out;
 }
 
-// Intentar subir a Firebase. Si falla, programa reintento.
-async function _attemptFirebaseUpload(colecciones, version, savedAt, isRetry=false) {
+// Subir a Firebase. Si falla, programa reintento automático.
+async function _doFirebaseUpload(isRetry=false) {
   if (!navigator.onLine) {
     setSyncStatus('pending');
     _pendingSync = true;
-    await markSyncPending({ colecciones: null, version, savedAt }); // señal de que hay algo pendiente
-    return false;
+    return;
   }
   setSyncStatus('syncing');
   try {
-    const cloudCols = await prepararParaCloud(colecciones);
-    await window._fbSetData({ colecciones: cloudCols, version, savedAt });
+    const cloudCols = await prepararParaCloud(STATE.colecciones);
+    await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: Date.now() });
     setSyncStatus('ok');
     _pendingSync = false;
     _retryCount = 0;
     clearTimeout(_retryTimer);
-    await clearSyncPending();
-    if (isRetry) toast('¡Sincronización completada! ☁️✅', '✅');
-    return true;
+    if (isRetry) toast('Sincronización completada ☁️', '✅');
   } catch(e) {
     console.warn('Firebase save error:', e.message || e);
     _pendingSync = true;
-    // Guardar la señal de que hay sync pendiente
-    await markSyncPending({ version, savedAt, ts: Date.now() });
     if (_retryCount < MAX_RETRIES) {
-      const delay = RETRY_DELAYS[_retryCount] || 300000;
+      const delay = RETRY_DELAYS[_retryCount] || 180000;
       _retryCount++;
       setSyncStatus('error');
-      console.log(`Reintento ${_retryCount}/${MAX_RETRIES} en ${delay/1000}s`);
       clearTimeout(_retryTimer);
-      _retryTimer = setTimeout(() => _retryUpload(), delay);
+      _retryTimer = setTimeout(() => _doFirebaseUpload(true), delay);
     } else {
+      // Agotados los reintentos en esta sesión — marcar pendiente, se intentará al reabrir
       setSyncStatus('pending');
-      toast('No se pudo sincronizar. Se reintentará cuando vuelvas a abrir la app.', '⚠️', 5000);
+      try { localStorage.setItem('nc_sync_pending', '1'); } catch {}
     }
-    return false;
   }
-}
-
-// Reintento programado — usa el estado actual de STATE
-async function _retryUpload() {
-  if (!_pendingSync) return;
-  console.log('🔄 Reintentando sincronización con Firebase…');
-  await _attemptFirebaseUpload(STATE.colecciones, _localVersion, Date.now(), true);
 }
 
 function save() {
   _localVersion++;
   clearTimeout(_saveTimer);
+  clearTimeout(_retryTimer); // cancelar reintento pendiente; el debounce lo absorbe
 
   // 1. Guardar COMPLETO en IndexedDB inmediatamente (con fotos originales)
   const uid = MY_UID;
-  const fullPayload = { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() };
-  dbSet('colpro_' + uid, fullPayload).catch(() => {});
+  dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() }).catch(() => {});
 
   // 2. Firebase con debounce 1.2s: agrupa cambios rápidos en una sola subida
-  //    Si hay un reintento pendiente, lo cancelamos y esperamos al debounce actual
-  clearTimeout(_retryTimer);
-  _saveTimer = setTimeout(async () => {
-    await _attemptFirebaseUpload(STATE.colecciones, _localVersion, fullPayload.savedAt);
-  }, 1200);
+  _saveTimer = setTimeout(() => _doFirebaseUpload(false), 1200);
 }
 
 window.addEventListener('beforeunload', () => {
-  try {
-    const uid = MY_UID;
-    localStorage.setItem('nc_localts_' + uid, String(_localVersion + ':' + Date.now()));
-  } catch {}
+  try { localStorage.setItem('nc_localts_' + MY_UID, String(_localVersion + ':' + Date.now())); } catch {}
 });
 
 window.addEventListener('online', async () => {
   document.getElementById('offline-badge')?.classList.remove('show');
   if (_pendingSync) {
-    _retryCount = 0; // reset contador al volver online
-    toast('Conexión restaurada — sincronizando…', '☁️');
-    await _attemptFirebaseUpload(STATE.colecciones, _localVersion, Date.now(), true);
+    _retryCount = 0;
+    clearTimeout(_retryTimer);
+    _doFirebaseUpload(true);
   }
 });
 window.addEventListener('offline', () => {
@@ -1177,12 +1141,13 @@ async function load() {
     document.getElementById('modal-start')?.classList.remove('show');
   }
 
-  // 1b. Comprobar si había sync pendiente de sesión anterior
-  const queuedItem = await getSyncPending();
-  if (queuedItem) {
-    _pendingSync = true;
-    console.log('📋 Sync pendiente detectado de sesión anterior');
-  }
+  // Recuperar flag de sync pendiente de sesión anterior
+  try {
+    if (localStorage.getItem('nc_sync_pending') === '1') {
+      _pendingSync = true;
+      localStorage.removeItem('nc_sync_pending');
+    }
+  } catch {}
 
   // 2. Firebase: solo si hay conexión
   if (!navigator.onLine) {
@@ -1195,10 +1160,9 @@ async function load() {
     const remotePayload = await window._fbGetData();
 
     if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
-      // Firebase vacío o error → subir lo que tenemos localmente
+      // Firebase vacío → subir lo que tenemos localmente
       if (STATE.colecciones.length > 0) {
-        await _attemptFirebaseUpload(STATE.colecciones, _localVersion, localPayload?.savedAt || Date.now(), false);
-        if (!_pendingSync) toast('Datos subidos a Firebase ☁️', '✅');
+        await _doFirebaseUpload(false);
       } else {
         setSyncStatus('ok');
       }
@@ -1209,18 +1173,16 @@ async function load() {
     const remoteTs = remotePayload.savedAt || 0;
 
     if (remoteTs > localTs && remotePayload.colecciones.length > 0) {
-      // Firebase más nuevo → usarlo (ya trae fotos comprimidas)
+      // Firebase más nuevo → usarlo
       STATE.colecciones = remotePayload.colecciones;
       _localVersion = remotePayload.version || 0;
       try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs }); } catch {}
       if (STATE.currentColId) renderCromos(); else renderHome();
       document.getElementById('modal-start')?.classList.remove('show');
-      await clearSyncPending();
-      _pendingSync = false;
       setSyncStatus('ok');
-    } else if (localTs >= remoteTs && STATE.colecciones.length > 0) {
-      // Local igual o más nuevo → subir a Firebase (puede haber cambios no subidos)
-      await _attemptFirebaseUpload(STATE.colecciones, _localVersion, localTs || Date.now(), _pendingSync);
+    } else if ((_pendingSync || localTs > remoteTs) && STATE.colecciones.length > 0) {
+      // Local más nuevo o había sync pendiente → subir
+      await _doFirebaseUpload(_pendingSync);
     } else {
       setSyncStatus('ok');
     }
@@ -1230,11 +1192,11 @@ async function load() {
     setSyncStatus('error');
     toast('Sin conexión con Firebase — usando datos locales', '⚠️');
     // Programar reintento
+    _pendingSync = true;
     if (_retryCount < MAX_RETRIES) {
-      const delay = RETRY_DELAYS[_retryCount] || 300000;
+      const delay = RETRY_DELAYS[_retryCount] || 180000;
       _retryCount++;
-      _pendingSync = true;
-      _retryTimer = setTimeout(() => _retryUpload(), delay);
+      _retryTimer = setTimeout(() => _doFirebaseUpload(true), delay);
     }
   }
 }
