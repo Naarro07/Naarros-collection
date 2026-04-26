@@ -18,7 +18,9 @@
 <title>CollectionsDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
+  // CONFIGURACIÓN
   const CLIENT_ID = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
   const SCOPES = 'https://www.googleapis.com/auth/drive.file';
   const FILE_NAME = 'naarros_collection_data.json';
@@ -26,103 +28,105 @@
   let tokenClient;
   let accessToken = null;
   let gDriveFileId = null;
+  let saveTimeout = null;
 
-  // FUNCIONES DE CARGA Y GUARDADO (El motor de la app)
+  // 1. FUNCIÓN PARA OBTENER DATOS DE DRIVE
   window._fbGetData = async () => {
     if (!accessToken) return null;
     try {
-      const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and trashed=false`, {
+      const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and trashed=false`, {
         headers: { 'Authorization': `Bearer ${accessToken}` }
       });
-      const data = await response.json();
+      const data = await resp.json();
       if (data.files && data.files.length > 0) {
         gDriveFileId = data.files[0].id;
-        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${gDriveFileId}?alt=media`, {
+        const fileRes = await fetch(`https://www.googleapis.com/drive/v3/files/${gDriveFileId}?alt=media`, {
           headers: { 'Authorization': `Bearer ${accessToken}` }
         });
-        return await res.json();
+        return await fileRes.json();
       }
-    } catch (e) { console.error("Error Drive:", e); }
+    } catch (e) { console.error("Error cargando Drive:", e); }
     return null;
   };
 
+  // 2. FUNCIÓN PARA GUARDAR EN DRIVE (OPTIMIZADA)
   window._fbSetData = async (payload) => {
     if (!accessToken) return;
-    try {
-      const metadata = { name: FILE_NAME, mimeType: 'application/json' };
-      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', blob);
+    
+    // Esperamos 2 segundos de inactividad antes de subir (para no saturar con 6000 cromos)
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(async () => {
+      try {
+        const metadata = { name: FILE_NAME, mimeType: 'application/json' };
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', blob);
 
-      let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-      let method = 'POST';
-      if (gDriveFileId) {
-        url = `https://www.googleapis.com/upload/drive/v3/files/${gDriveFileId}?uploadType=multipart`;
-        method = 'PATCH';
+        let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+        let method = 'POST';
+        if (gDriveFileId) {
+          url = `https://www.googleapis.com/upload/drive/v3/files/${gDriveFileId}?uploadType=multipart`;
+          method = 'PATCH';
+        }
+
+        const res = await fetch(url, { 
+          method, 
+          headers: { 'Authorization': `Bearer ${accessToken}` }, 
+          body: form 
+        });
+
+        if (res.ok) {
+          console.log("✅ Sincronizado con Drive");
+          _updateVisualStatus(true);
+        }
+      } catch (e) { 
+        console.error("Error al guardar:", e);
+        _updateVisualStatus(false);
       }
-
-      await fetch(url, { method, headers: { 'Authorization': `Bearer ${accessToken}` }, body: form });
-      console.log("✅ Guardado en Drive");
-    } catch (e) { console.error("Error al guardar:", e); }
+    }, 2000);
   };
 
-  // Funciones vacías para no romper el resto de la app
-  window._fbSaveShare = async () => { alert("Compartir no disponible en modo Drive"); };
-  window._fbGetShare = async () => null;
+  // 3. GESTIÓN VISUAL Y CONEXIÓN
+  function _updateVisualStatus(ok) {
+    const dot = document.querySelector('.storage-info .dot');
+    const label = document.getElementById('storage-label');
+    if (dot && label) {
+      dot.style.background = ok ? '#4caf50' : '#f44336';
+      label.textContent = ok ? 'Drive Conectado' : 'Error Drive';
+    }
+  }
 
-  // INICIALIZACIÓN DE LIBRERÍAS
-  function initDrive() {
+  window.initDrive = () => {
     tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID, scope: SCOPES,
+      client_id: CLIENT_ID,
+      scope: SCOPES,
       callback: (resp) => {
         if (resp.error) return;
         accessToken = resp.access_token;
-        window._fbReady = true;
+        _updateVisualStatus(true);
+        // Arrancar la app si existe la función de inicio
         if (window._bootApp) window._bootApp();
-        document.getElementById('splash').classList.add('hidden');
+        document.getElementById('splash')?.classList.add('hidden');
       },
     });
-    // Intentar arrancar
+
+    // Cambiamos el botón de Firebase por el de Drive
     const label = document.getElementById('storage-label');
     if (label) {
-      label.innerHTML = '<button onclick="tokenClient.requestAccessToken()" style="background:none;border:none;color:var(--accent);font-weight:bold;cursor:pointer;padding:0">🔌 Conectar Drive</button>';
-      document.querySelector('.storage-info .dot').style.background = 'var(--red)';
+      label.innerHTML = `<button onclick="tokenClient.requestAccessToken()" style="background:none;border:none;color:cyan;cursor:pointer;padding:0;font-family:inherit;">🔌 Conectar Google Drive</button>`;
     }
-    document.getElementById('splash').classList.add('hidden');
-  }
-
-  // Cargar scripts de Google al iniciar
-  window.addEventListener('load', () => {
-    const s = document.createElement('script'); s.src="https://accounts.google.com/gsi/client"; s.onload=initDrive; document.head.appendChild(s);
-  });
-</script>
-<script>
-  // Esta función forzará la aparición del selector de archivos para importar
-  window.importarCopiaSeguridad = function() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.onchange = e => {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const data = JSON.parse(event.target.result);
-          // Guardamos en la memoria local
-          await _db.put('kv', data, 'full_data');
-          // Y forzamos el guardado en Google Drive
-          if (window._fbSetData) await _fbSetData(data);
-          alert("¡Datos importados y sincronizados con Drive con éxito!");
-          location.reload(); // Recargamos para ver los cromos
-        } catch (err) {
-          alert("Error al leer el archivo JSON");
-        }
-      };
-      reader.readAsText(file);
-    };
-    input.click();
   };
+
+  // 4. LIMPIEZA DE FUNCIONES ANTIGUAS (Para que no den error)
+  window._fbSaveShare = async () => alert("Usa Google Drive para guardar");
+  window._fbGetShare = async () => null;
+
+  window.addEventListener('load', () => {
+    // Si la librería de Google no ha cargado, esperamos un poco
+    if (typeof google !== 'undefined') initDrive();
+    else setTimeout(initDrive, 1000);
+  });
 </script>
 <style>
 /* ─── TEMAS ─── */
