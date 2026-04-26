@@ -20,110 +20,103 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-  // CONFIGURACIÓN
-  const CLIENT_ID = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
-  const SCOPES = 'https://www.googleapis.com/auth/drive.file';
-  const FILE_NAME = 'naarros_collection_data.json';
+  // ══════════════════════════════════════════
+  //  ☁️ GOOGLE DRIVE — Sincronización
+  // ══════════════════════════════════════════
+  const DRIVE_CLIENT_ID = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
+  const DRIVE_SCOPE     = 'https://www.googleapis.com/auth/drive.file';
+  const DRIVE_FILE_NAME = 'naarros_collection_data.json';
 
-  let tokenClient;
-  let accessToken = null;
-  let gDriveFileId = null;
-  let saveTimeout = null;
+  let _driveTokenClient;
+  let _driveAccessToken = null;
+  let _driveFileId      = null;
+  let _driveSaveTimeout = null;
 
-  // 1. FUNCIÓN PARA OBTENER DATOS DE DRIVE
-  window._fbGetData = async () => {
-    if (!accessToken) return null;
+  // Obtener datos desde Drive (devuelve el objeto JSON o null)
+  window.driveGetData = async () => {
+    if (!_driveAccessToken) return null;
     try {
-      const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and trashed=false`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      });
+      const resp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}' and trashed=false`,
+        { headers: { 'Authorization': `Bearer ${_driveAccessToken}` } }
+      );
       const data = await resp.json();
       if (data.files && data.files.length > 0) {
-        gDriveFileId = data.files[0].id;
-        const fileRes = await fetch(`https://www.googleapis.com/drive/v3/files/${gDriveFileId}?alt=media`, {
-          headers: { 'Authorization': `Bearer ${accessToken}` }
-        });
+        _driveFileId = data.files[0].id;
+        const fileRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${_driveFileId}?alt=media`,
+          { headers: { 'Authorization': `Bearer ${_driveAccessToken}` } }
+        );
         return await fileRes.json();
       }
-    } catch (e) { console.error("Error cargando Drive:", e); }
+    } catch (e) { console.error('Drive — error al cargar:', e); }
     return null;
   };
 
-  // 2. FUNCIÓN PARA GUARDAR EN DRIVE (OPTIMIZADA)
-  window._fbSetData = async (payload) => {
-    if (!accessToken) return;
-    
-    // Esperamos 2 segundos de inactividad antes de subir (para no saturar con 6000 cromos)
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(async () => {
+  // Guardar datos en Drive con debounce de 2s
+  window.driveSetData = async (payload) => {
+    if (!_driveAccessToken) return;
+    clearTimeout(_driveSaveTimeout);
+    _driveSaveTimeout = setTimeout(async () => {
       try {
-        const metadata = { name: FILE_NAME, mimeType: 'application/json' };
+        const metadata = { name: DRIVE_FILE_NAME, mimeType: 'application/json' };
         const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         form.append('file', blob);
 
-        let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-        let method = 'POST';
-        if (gDriveFileId) {
-          url = `https://www.googleapis.com/upload/drive/v3/files/${gDriveFileId}?uploadType=multipart`;
-          method = 'PATCH';
-        }
+        const url    = _driveFileId
+          ? `https://www.googleapis.com/upload/drive/v3/files/${_driveFileId}?uploadType=multipart`
+          : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+        const method = _driveFileId ? 'PATCH' : 'POST';
 
-        const res = await fetch(url, { 
-          method, 
-          headers: { 'Authorization': `Bearer ${accessToken}` }, 
-          body: form 
+        const res = await fetch(url, {
+          method,
+          headers: { 'Authorization': `Bearer ${_driveAccessToken}` },
+          body: form
         });
-
         if (res.ok) {
-          console.log("✅ Sincronizado con Drive");
-          _updateVisualStatus(true);
+          console.log('✅ Sincronizado con Drive');
+          _driveUpdateStatus(true);
         }
-      } catch (e) { 
-        console.error("Error al guardar:", e);
-        _updateVisualStatus(false);
+      } catch (e) {
+        console.error('Drive — error al guardar:', e);
+        _driveUpdateStatus(false);
       }
     }, 2000);
   };
 
-  // 3. GESTIÓN VISUAL Y CONEXIÓN
-  function _updateVisualStatus(ok) {
-    const dot = document.querySelector('.storage-info .dot');
+  // Actualizar indicador visual de estado Drive
+  function _driveUpdateStatus(ok) {
+    const dot   = document.querySelector('.storage-info .dot');
     const label = document.getElementById('storage-label');
     if (dot && label) {
       dot.style.background = ok ? '#4caf50' : '#f44336';
-      label.textContent = ok ? 'Drive Conectado' : 'Error Drive';
+      label.textContent    = ok ? '☁️ Drive · OK' : '⚠️ Error Drive';
     }
   }
 
+  // Inicializar cliente OAuth de Google Drive
   window.initDrive = () => {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
+    _driveTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: DRIVE_CLIENT_ID,
+      scope: DRIVE_SCOPE,
       callback: (resp) => {
         if (resp.error) return;
-        accessToken = resp.access_token;
-        _updateVisualStatus(true);
-        // Arrancar la app si existe la función de inicio
+        _driveAccessToken = resp.access_token;
+        _driveUpdateStatus(true);
         if (window._bootApp) window._bootApp();
         document.getElementById('splash')?.classList.add('hidden');
       },
     });
 
-    // Cambiamos el botón de Firebase por el de Drive
     const label = document.getElementById('storage-label');
     if (label) {
-      label.innerHTML = `<button onclick="tokenClient.requestAccessToken()" style="background:none;border:none;color:cyan;cursor:pointer;padding:0;font-family:inherit;">🔌 Conectar Google Drive</button>`;
+      label.innerHTML = `<button onclick="_driveTokenClient.requestAccessToken()" style="background:none;border:none;color:cyan;cursor:pointer;padding:0;font-family:inherit;">🔌 Conectar Google Drive</button>`;
     }
   };
 
-  // 4. LIMPIEZA DE FUNCIONES ANTIGUAS (Para que no den error)
-  window._fbSaveShare = async () => alert("Usa Google Drive para guardar");
-  window._fbGetShare = async () => null;
-
   window.addEventListener('load', () => {
-    // Si la librería de Google no ha cargado, esperamos un poco
     if (typeof google !== 'undefined') initDrive();
     else setTimeout(initDrive, 1000);
   });
@@ -942,35 +935,17 @@ select.form-input { cursor: pointer; }
 
 <script>
 // ══════════════════════════════════════════
-//  ⚡ APP PERSONAL — SIN LOGIN
-//  UID fijo de Firestore, arranque instantáneo
+//  ⚡ APP PERSONAL
+//  Arranque instantáneo — almacenamiento local + Google Drive opcional
 // ══════════════════════════════════════════
 
-// UID fijo personal — no requiere Firebase Auth
 const MY_UID = 'naarro-personal';
-
 let _currentUser = { uid: MY_UID };
 
 function hideSplash() {
   const s = document.getElementById('splash');
   if (s) { s.classList.add('hidden'); setTimeout(() => s.remove(), 350); }
 }
-// Stubs de funciones de auth que ya no existen (por compatibilidad)
-function showLogin() {}
-function switchTab() {}
-function setAuthError() {}
-function doLogin() {}
-function doRegister() {}
-function doGoogleLogin() {}
-function doLogout() {}
-function doResetPassword() {}
-function updateUserBadge() {
-  // Mostrar badge simple sin nombre de usuario
-  const badge = document.getElementById('user-badge');
-  if (badge) badge.style.display = 'none'; // no hace falta el badge
-}
-
-// Sin _onAuthChange — arrancamos directo
 const EMOJIS = ['⭐','🏆','⚽','🏀','🎮','🦁','🐉','🌍','🎯','🎨','🚀','🎸','🦊','🌊','🔥','💎','🌈','🍕','🐋','🦋'];
 const SAVE_DELAY = 400;
 
@@ -1046,7 +1021,7 @@ function setSyncStatus(status) {
   if (status === 'ok') {
     _syncOkTimer = setTimeout(() => {
       wrap.classList.remove('sync-ok');
-      label.textContent = '☁️ Firebase · OK';
+      label.textContent = '☁️ Drive · OK';
     }, 3000);
   }
 }
@@ -1081,95 +1056,54 @@ let _retryCount = 0;
 const MAX_RETRIES = 6;
 const RETRY_DELAYS = [3000, 8000, 20000, 45000, 90000, 180000];
 
-// Comprimir foto para Firebase (400px max, quality 0.6)
-function comprimirParaCloud(dataUrl) {
-  return new Promise(resolve => {
-    if (!dataUrl) { resolve(null); return; }
-    const img = new Image();
-    img.onload = () => {
-      const MAX = 400;
-      let w = img.width, h = img.height;
-      if (w > MAX || h > MAX) { const r = Math.min(MAX/w, MAX/h); w = Math.round(w*r); h = Math.round(h*r); }
-      const c = document.createElement('canvas'); c.width = w; c.height = h;
-      c.getContext('2d').drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL('image/jpeg', 0.6));
-    };
-    img.onerror = () => resolve(null);
-    img.src = dataUrl;
-  });
+// ── Guardar en IndexedDB (local) + Drive (nube) ──
+function save() {
+  _localVersion++;
+  clearTimeout(_saveTimer);
+
+  // 1. Guardar en IndexedDB inmediatamente (fuente de verdad, incluye fotos originales)
+  const uid = MY_UID;
+  dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() }).catch(() => {});
+
+  // 2. Sincronizar con Drive con debounce 1.2s (agrupa cambios rápidos)
+  _saveTimer = setTimeout(() => _doDriveUpload(), 1200);
 }
 
-// Preparar colecciones para Firebase: fotos comprimidas
-async function prepararParaCloud(colecciones) {
-  const out = [];
-  for (const col of colecciones) {
-    const cromos = [];
-    for (const c of col.cromos) {
-      const cc = { ...c };
-      if (cc.fotoFront) cc.fotoFront = await comprimirParaCloud(cc.fotoFront);
-      if (cc.fotoBack)  cc.fotoBack  = await comprimirParaCloud(cc.fotoBack);
-      cromos.push(cc);
-    }
-    out.push({ ...col, cromos });
-  }
-  return out;
-}
-
-// Subir a Firebase. Si falla, programa reintento automático.
-async function _doFirebaseUpload(isRetry=false) {
+// Subir datos a Google Drive. Si no hay conexión o token, marca como pendiente.
+async function _doDriveUpload(isRetry = false) {
   if (!navigator.onLine) {
     setSyncStatus('pending');
     _pendingSync = true;
     return;
   }
+  if (typeof window.driveSetData !== 'function' || !_driveAccessToken) {
+    // Drive no conectado — guardar sólo local
+    setSyncStatus('offline');
+    return;
+  }
   setSyncStatus('syncing');
   try {
-    const cloudCols = await prepararParaCloud(STATE.colecciones);
-
-    // Diagnóstico de tamaño antes de subir
-    const jsonStr = JSON.stringify(cloudCols);
-    const sizeKB = Math.round(jsonStr.length / 1024);
-    console.log(`📤 Subiendo a Firebase: ${sizeKB} KB (${cloudCols.reduce((s,c)=>s+c.cromos.length,0)} cromos)`);
-    if (sizeKB > 900) {
-      console.warn(`⚠️ Tamaño cercano al límite de Firestore (1MB): ${sizeKB}KB`);
-      toast(`⚠️ Colección grande (${sizeKB}KB) — comprimiendo más…`, '⚠️');
-    }
-
-    await window._fbSetData({ colecciones: cloudCols, version: _localVersion, savedAt: Date.now() });
-    console.log(`✅ Firebase OK — ${sizeKB}KB subidos`);
+    await window.driveSetData({ colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() });
     setSyncStatus('ok');
     _pendingSync = false;
     _retryCount = 0;
     clearTimeout(_retryTimer);
     if (isRetry) toast('Sincronización completada ☁️', '✅');
-  } catch(e) {
+  } catch (e) {
     const msg = e?.message || String(e);
-    console.error('❌ Firebase save error:', msg, e);
+    console.error('Drive — error al guardar:', msg);
     _pendingSync = true;
     if (_retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAYS[_retryCount] || 180000;
       _retryCount++;
       setSyncStatus('error');
       clearTimeout(_retryTimer);
-      _retryTimer = setTimeout(() => _doFirebaseUpload(true), delay);
+      _retryTimer = setTimeout(() => _doDriveUpload(true), delay);
     } else {
       setSyncStatus('pending');
       try { localStorage.setItem('nc_sync_pending', '1'); } catch {}
     }
   }
-}
-
-function save() {
-  _localVersion++;
-  clearTimeout(_saveTimer);
-  clearTimeout(_retryTimer); // cancelar reintento pendiente; el debounce lo absorbe
-
-  // 1. Guardar COMPLETO en IndexedDB inmediatamente (con fotos originales)
-  const uid = MY_UID;
-  dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() }).catch(() => {});
-
-  // 2. Firebase con debounce 1.2s: agrupa cambios rápidos en una sola subida
-  _saveTimer = setTimeout(() => _doFirebaseUpload(false), 1200);
 }
 
 window.addEventListener('beforeunload', () => {
@@ -1181,7 +1115,7 @@ window.addEventListener('online', async () => {
   if (_pendingSync) {
     _retryCount = 0;
     clearTimeout(_retryTimer);
-    _doFirebaseUpload(true);
+    _doDriveUpload(true);
   }
 });
 window.addEventListener('offline', () => {
@@ -1198,7 +1132,7 @@ async function load() {
   const uid = MY_UID;
   try { await openDB(); } catch {}
 
-  // 1. Cargar local SIEMPRE primero (tiene fotos originales, es la fuente de verdad)
+  // 1. Cargar desde IndexedDB (fuente de verdad local, tiene fotos originales)
   let localPayload = null;
   try {
     const raw = await dbGet('colpro_' + uid);
@@ -1224,45 +1158,37 @@ async function load() {
     }
   } catch {}
 
-  // 2. Firebase: solo si hay conexión
+  // 2. Google Drive: solo si hay conexión y token disponible
   if (!navigator.onLine) {
     setSyncStatus(_pendingSync ? 'pending' : 'offline');
     return;
   }
 
+  if (typeof window.driveGetData !== 'function' || !_driveAccessToken) {
+    // Drive no conectado aún — la app funciona sólo local
+    setSyncStatus('offline');
+    return;
+  }
+
   setSyncStatus('syncing');
   try {
-    const remotePayload = await window._fbGetData();
-
-    // Migración automática del formato viejo (todo en un doc) al nuevo (1 doc por colección)
-    if (remotePayload?._needsMigration) {
-      console.log('🔄 Migrando datos de Firebase al nuevo formato…');
-      STATE.colecciones = remotePayload.colecciones;
-      _localVersion = remotePayload.version || 0;
-      try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remotePayload.savedAt }); } catch {}
-      if (STATE.currentColId) renderCromos(); else renderHome();
-      document.getElementById('modal-start')?.classList.remove('show');
-      // Subir en nuevo formato
-      await _doFirebaseUpload(false);
-      toast('Datos migrados al nuevo formato ☁️✅', '✅');
-      return;
-    }
+    const remotePayload = await window.driveGetData();
 
     if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
-      // Firebase vacío → subir lo que tenemos localmente
+      // Drive vacío → subir lo local si existe
       if (STATE.colecciones.length > 0) {
-        await _doFirebaseUpload(false);
+        await _doDriveUpload();
       } else {
         setSyncStatus('ok');
       }
       return;
     }
 
-    const localTs  = localPayload?.savedAt || 0;
-    const remoteTs = remotePayload.savedAt || 0;
+    const localTs  = localPayload?.savedAt  || 0;
+    const remoteTs = remotePayload.savedAt   || 0;
 
     if (remoteTs > localTs && remotePayload.colecciones.length > 0) {
-      // Firebase más nuevo → usarlo
+      // Drive más reciente → usarlo
       STATE.colecciones = remotePayload.colecciones;
       _localVersion = remotePayload.version || 0;
       try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs }); } catch {}
@@ -1270,22 +1196,22 @@ async function load() {
       document.getElementById('modal-start')?.classList.remove('show');
       setSyncStatus('ok');
     } else if ((_pendingSync || localTs > remoteTs) && STATE.colecciones.length > 0) {
-      // Local más nuevo o había sync pendiente → subir
-      await _doFirebaseUpload(_pendingSync);
+      // Local más reciente o sync pendiente → subir a Drive
+      await _doDriveUpload(_pendingSync);
     } else {
       setSyncStatus('ok');
     }
 
-  } catch(e) {
+  } catch (e) {
     const msg = e?.message || String(e);
-    console.error('❌ Firebase load error:', msg, e);
+    console.error('Drive — error al cargar:', msg);
     setSyncStatus('error');
-    toast(`⚠️ Firebase: ${msg.slice(0, 80)}`, '⚠️', 7000);
+    toast(`⚠️ Drive: ${msg.slice(0, 80)}`, '⚠️', 7000);
     _pendingSync = true;
     if (_retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAYS[_retryCount] || 180000;
       _retryCount++;
-      _retryTimer = setTimeout(() => _doFirebaseUpload(true), delay);
+      _retryTimer = setTimeout(() => _doDriveUpload(true), delay);
     }
   }
 }
@@ -2276,20 +2202,10 @@ async function abrirIntercambio(colId) {
     .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
 
   const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
-  const shareId = 'share_' + STATE.fichaColId.slice(0, 8);
 
-  // URL base: share.html está en la misma carpeta que index.html en GitHub Pages
+  // Compartir mediante datos inline en la URL (no requiere backend)
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
-
-  let link = base + '?id=' + shareId;
-
-  try {
-    await window._fbSaveShare(shareId, shareData);
-  } catch(e) {
-    // Fallback offline: datos inline en la URL
-    link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
-    toast('Sin conexión — usando enlace con datos inline', '⚠️');
-  }
+  const link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
 
   document.getElementById('share-link-input').value = link;
 
@@ -2762,8 +2678,8 @@ function cerrarBannerPWA() {
 }
 
 // ── Init ──
-// _bootApp es llamado por el módulo Firebase cuando está listo
-// Esto garantiza al 100% que window._fbGetData existe antes de load()
+// _bootApp es llamado por el módulo Drive cuando está listo,
+// o directamente en load() si Drive no está conectado.
 window._bootApp = async () => {
   setupDropZone();
   initPWA();
