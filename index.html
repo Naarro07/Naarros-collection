@@ -20,106 +20,192 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-  // ══════════════════════════════════════════
-  //  ☁️ GOOGLE DRIVE — Sincronización
-  // ══════════════════════════════════════════
-  const DRIVE_CLIENT_ID = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
-  const DRIVE_SCOPE     = 'https://www.googleapis.com/auth/drive.file';
-  const DRIVE_FILE_NAME = 'naarros_collection_data.json';
+// ══════════════════════════════════════════
+//  ☁️ GOOGLE DRIVE — Sincronización split
+//
+//  Arquitectura de archivos en Drive:
+//    nc_meta.json          → colecciones + cromos SIN fotos (~50 KB)
+//    nc_photos_<colId>.json → fotos (base64) de esa colección
+//
+//  Flujo:
+//    - Arranque: app carga desde IndexedDB local inmediatamente.
+//      Drive se conecta en segundo plano (no bloquea).
+//    - save():  guarda meta siempre; fotos solo si cambiaron.
+//    - Carga remota: descarga meta, luego fotos de cada col en paralelo.
+// ══════════════════════════════════════════
+const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
+const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_META_NAME  = 'nc_meta.json';
+const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 
-  let _driveTokenClient;
-  let _driveAccessToken = null;
-  let _driveFileId      = null;
-  let _driveSaveTimeout = null;
+let _driveTokenClient;
+let _driveAccessToken = null;
 
-  // Obtener datos desde Drive (devuelve el objeto JSON o null)
-  window.driveGetData = async () => {
-    if (!_driveAccessToken) return null;
-    try {
-      const resp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}' and trashed=false`,
-        { headers: { 'Authorization': `Bearer ${_driveAccessToken}` } }
-      );
-      const data = await resp.json();
-      if (data.files && data.files.length > 0) {
-        _driveFileId = data.files[0].id;
-        const fileRes = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${_driveFileId}?alt=media`,
-          { headers: { 'Authorization': `Bearer ${_driveAccessToken}` } }
-        );
-        return await fileRes.json();
-      }
-    } catch (e) { console.error('Drive — error al cargar:', e); }
-    return null;
-  };
+// Caché de fileIds en Drive  { filename → fileId }
+const _driveIds = {};
 
-  // Guardar datos en Drive con debounce de 2s
-  window.driveSetData = async (payload) => {
-    if (!_driveAccessToken) return;
-    clearTimeout(_driveSaveTimeout);
-    _driveSaveTimeout = setTimeout(async () => {
+// Conjunto de colIds cuyas fotos han cambiado desde el último guardado
+const _dirtyPhotos = new Set();
+
+// ── Bajo nivel: buscar o crear fileId por nombre ──
+async function _driveFileId(name) {
+  if (_driveIds[name]) return _driveIds[name];
+  const r = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=name='${name}' and trashed=false&fields=files(id)`,
+    { headers: { Authorization: `Bearer ${_driveAccessToken}` } }
+  );
+  const d = await r.json();
+  if (d.files && d.files.length > 0) {
+    _driveIds[name] = d.files[0].id;
+    return _driveIds[name];
+  }
+  return null;
+}
+
+// ── Bajo nivel: subir/actualizar un JSON en Drive ──
+async function _driveUploadJSON(name, obj) {
+  const existing = await _driveFileId(name);
+  const meta = { name, mimeType: 'application/json' };
+  const body = new FormData();
+  body.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+  body.append('file',     new Blob([JSON.stringify(obj)],  { type: 'application/json' }));
+  const url    = existing
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existing}?uploadType=multipart`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+  const method = existing ? 'PATCH' : 'POST';
+  const res = await fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${_driveAccessToken}` },
+    body
+  });
+  if (!res.ok) throw new Error(`Drive upload error ${res.status}`);
+  const d = await res.json();
+  _driveIds[name] = d.id;  // guardar fileId para futuros PATCH
+}
+
+// ── Bajo nivel: descargar JSON de Drive por nombre ──
+async function _driveDownloadJSON(name) {
+  const fid = await _driveFileId(name);
+  if (!fid) return null;
+  const r = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,
+    { headers: { Authorization: `Bearer ${_driveAccessToken}` } }
+  );
+  if (!r.ok) return null;
+  return await r.json();
+}
+
+// ── API pública: obtener todos los datos desde Drive ──
+//    Devuelve { colecciones, version, savedAt } con fotos incluidas
+//    o null si Drive no tiene nada todavía.
+window.driveGetData = async () => {
+  if (!_driveAccessToken) return null;
+  try {
+    const meta = await _driveDownloadJSON(DRIVE_META_NAME);
+    if (!meta || !Array.isArray(meta.colecciones)) return null;
+
+    // Descargar fotos de todas las colecciones en paralelo
+    const fotosPromises = meta.colecciones.map(async col => {
       try {
-        const metadata = { name: DRIVE_FILE_NAME, mimeType: 'application/json' };
-        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-        const form = new FormData();
-        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        form.append('file', blob);
-
-        const url    = _driveFileId
-          ? `https://www.googleapis.com/upload/drive/v3/files/${_driveFileId}?uploadType=multipart`
-          : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-        const method = _driveFileId ? 'PATCH' : 'POST';
-
-        const res = await fetch(url, {
-          method,
-          headers: { 'Authorization': `Bearer ${_driveAccessToken}` },
-          body: form
-        });
-        if (res.ok) {
-          console.log('✅ Sincronizado con Drive');
-          _driveUpdateStatus(true);
+        const photos = await _driveDownloadJSON(DRIVE_PHOTO_PFX + col.id + '.json');
+        if (!photos) return;
+        // Inyectar fotos en los cromos correspondientes
+        const map = {};
+        for (const p of (photos.photos || [])) map[p.id] = p;
+        for (const c of col.cromos) {
+          if (map[c.id]) { c.fotoFront = map[c.id].front || null; c.fotoBack = map[c.id].back || null; }
         }
-      } catch (e) {
-        console.error('Drive — error al guardar:', e);
-        _driveUpdateStatus(false);
-      }
-    }, 2000);
-  };
+      } catch {}
+    });
+    await Promise.all(fotosPromises);
+    return meta;
+  } catch (e) {
+    console.error('Drive — error al cargar:', e);
+    return null;
+  }
+};
 
-  // Actualizar indicador visual de estado Drive
-  function _driveUpdateStatus(ok) {
-    const dot   = document.querySelector('.storage-info .dot');
-    const label = document.getElementById('storage-label');
-    if (dot && label) {
-      dot.style.background = ok ? '#4caf50' : '#f44336';
-      label.textContent    = ok ? '☁️ Drive · OK' : '⚠️ Error Drive';
+// ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
+window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
+  if (!_driveAccessToken) return;
+
+  // 1. Construir payload de meta SIN fotos
+  const metaCols = colecciones.map(col => ({
+    ...col,
+    cromos: col.cromos.map(c => {
+      const { fotoFront: _f, fotoBack: _b, ...rest } = c;
+      return rest;
+    })
+  }));
+  await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
+
+  // 2. Para cada colección cuyas fotos hayan cambiado, subir su archivo de fotos
+  const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
+  const photoUploads = [];
+  for (const col of colecciones) {
+    if (!dirty.has(col.id)) continue;
+    const photos = col.cromos
+      .filter(c => c.fotoFront || c.fotoBack)
+      .map(c => ({ id: c.id, front: c.fotoFront || null, back: c.fotoBack || null }));
+    photoUploads.push(
+      _driveUploadJSON(DRIVE_PHOTO_PFX + col.id + '.json', { colId: col.id, photos })
+        .catch(e => console.error(`Drive — error fotos ${col.id}:`, e))
+    );
+  }
+  if (photoUploads.length) await Promise.all(photoUploads);
+};
+
+// ── Marcar colección como con fotos modificadas ──
+window.driveMarkPhotosDirty = (colId) => { if (colId) _dirtyPhotos.add(colId); };
+
+// ── Estado visual del indicador ──
+window._driveConnected = false;
+function _driveUpdateStatus(ok) {
+  window._driveConnected = ok;
+  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
+}
+
+// ── Inicializar OAuth y mostrar botón de conexión ──
+// Espera activamente a que el script de Google cargue (async defer puede tardar).
+window.initDrive = () => {
+  const MAX_WAIT_MS = 10000;  // esperar hasta 10s a que cargue GSI
+  const START = Date.now();
+
+  function _tryInit() {
+    if (typeof google !== 'undefined' && google?.accounts?.oauth2) {
+      _doInitDrive();
+    } else if (Date.now() - START < MAX_WAIT_MS) {
+      setTimeout(_tryInit, 300);
+    } else {
+      console.warn('Drive: GSI no disponible (sin conexión o bloqueado)');
     }
   }
 
-  // Inicializar cliente OAuth de Google Drive
-  window.initDrive = () => {
-    _driveTokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: DRIVE_CLIENT_ID,
-      scope: DRIVE_SCOPE,
-      callback: (resp) => {
-        if (resp.error) return;
-        _driveAccessToken = resp.access_token;
-        _driveUpdateStatus(true);
-        if (window._bootApp) window._bootApp();
-        document.getElementById('splash')?.classList.add('hidden');
-      },
-    });
+  function _doInitDrive() {
+    try {
+      _driveTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: DRIVE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: async (resp) => {
+          if (resp.error) { console.warn('Drive OAuth error:', resp.error); return; }
+          _driveAccessToken = resp.access_token;
+          window._driveConnected = true;
+          setSyncStatus('syncing');
+          _syncWithDriveInBackground();
+        },
+      });
 
-    const label = document.getElementById('storage-label');
-    if (label) {
-      label.innerHTML = `<button onclick="_driveTokenClient.requestAccessToken()" style="background:none;border:none;color:cyan;cursor:pointer;padding:0;font-family:inherit;">🔌 Conectar Google Drive</button>`;
+      const label = document.getElementById('storage-label');
+      if (label) {
+        label.innerHTML = `<button onclick="_driveTokenClient.requestAccessToken()" style="background:none;border:none;color:cyan;cursor:pointer;padding:0;font-family:inherit;font-size:inherit;">🔌 Conectar Drive</button>`;
+      }
+    } catch(e) {
+      console.warn('Drive: initTokenClient falló:', e);
     }
-  };
+  }
 
-  window.addEventListener('load', () => {
-    if (typeof google !== 'undefined') initDrive();
-    else setTimeout(initDrive, 1000);
-  });
+  _tryInit();
+};
 </script>
 <style>
 /* ─── TEMAS ─── */
@@ -1046,57 +1132,62 @@ function dbGet(key) { return new Promise((res, rej) => { const req = db.transact
 function dbSet(key, val) { return new Promise((res, rej) => { const req = db.transaction(STORE,'readwrite').objectStore(STORE).put(val, key); req.onsuccess = () => res(); req.onerror = () => rej(req.error); }); }
 
 // ══════════════════════════════════════════
-//  SAVE / LOAD — con reintentos automáticos
+//  SAVE / LOAD — IndexedDB local + Drive nube
 // ══════════════════════════════════════════
-let _saveTimer = null;
-let _pendingSync = false;
+let _saveTimer    = null;
+let _pendingSync  = false;
 let _localVersion = 0;
-let _retryTimer = null;
-let _retryCount = 0;
-const MAX_RETRIES = 6;
-const RETRY_DELAYS = [3000, 8000, 20000, 45000, 90000, 180000];
+let _retryTimer   = null;
+let _retryCount   = 0;
+const MAX_RETRIES   = 5;
+const RETRY_DELAYS  = [4000, 12000, 30000, 60000, 120000];
 
-// ── Guardar en IndexedDB (local) + Drive (nube) ──
-function save() {
+// ── SAVE ──
+// Guarda en IndexedDB inmediatamente.
+// Sube a Drive con debounce (meta siempre, fotos solo si _dirtyPhotos tiene entradas).
+function save(dirtyColId) {
   _localVersion++;
   clearTimeout(_saveTimer);
 
-  // 1. Guardar en IndexedDB inmediatamente (fuente de verdad, incluye fotos originales)
-  const uid = MY_UID;
-  dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() }).catch(() => {});
+  // Marcar colección con fotos modificadas si se indica
+  if (dirtyColId) window.driveMarkPhotosDirty?.(dirtyColId);
 
-  // 2. Sincronizar con Drive con debounce 1.2s (agrupa cambios rápidos)
-  _saveTimer = setTimeout(() => _doDriveUpload(), 1200);
+  // Guardar en IndexedDB al momento (fuente de verdad local, con fotos originales)
+  dbSet('nc_local_' + MY_UID, {
+    colecciones: STATE.colecciones,
+    version: _localVersion,
+    savedAt: Date.now()
+  }).catch(() => {});
+
+  // Drive con debounce 1.5s
+  _saveTimer = setTimeout(() => _doDriveUpload(), 1500);
 }
 
-// Subir datos a Google Drive. Si no hay conexión o token, marca como pendiente.
+// ── SUBIDA A DRIVE ──
 async function _doDriveUpload(isRetry = false) {
-  if (!navigator.onLine) {
-    setSyncStatus('pending');
-    _pendingSync = true;
-    return;
-  }
-  if (typeof window.driveSetData !== 'function' || !_driveAccessToken) {
-    // Drive no conectado — guardar sólo local
-    setSyncStatus('offline');
-    return;
-  }
+  if (!navigator.onLine) { setSyncStatus('pending'); _pendingSync = true; return; }
+  if (!window._driveConnected) { setSyncStatus('offline'); return; }
+
   setSyncStatus('syncing');
   try {
-    await window.driveSetData({ colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now() });
+    const now = Date.now();
+    // Capturar y limpiar el set de colIds sucios ANTES de la subida
+    const dirty = new Set(_dirtyPhotos);
+    _dirtyPhotos.clear();
+
+    await window.driveSetData(STATE.colecciones, _localVersion, now, dirty);
+
     setSyncStatus('ok');
     _pendingSync = false;
-    _retryCount = 0;
+    _retryCount  = 0;
     clearTimeout(_retryTimer);
     if (isRetry) toast('Sincronización completada ☁️', '✅');
   } catch (e) {
-    const msg = e?.message || String(e);
-    console.error('Drive — error al guardar:', msg);
+    console.error('Drive upload error:', e?.message || e);
     _pendingSync = true;
+    setSyncStatus('error');
     if (_retryCount < MAX_RETRIES) {
-      const delay = RETRY_DELAYS[_retryCount] || 180000;
-      _retryCount++;
-      setSyncStatus('error');
+      const delay = RETRY_DELAYS[_retryCount++] || 120000;
       clearTimeout(_retryTimer);
       _retryTimer = setTimeout(() => _doDriveUpload(true), delay);
     } else {
@@ -1106,49 +1197,91 @@ async function _doDriveUpload(isRetry = false) {
   }
 }
 
-window.addEventListener('beforeunload', () => {
-  try { localStorage.setItem('nc_localts_' + MY_UID, String(_localVersion + ':' + Date.now())); } catch {}
-});
-
-window.addEventListener('online', async () => {
-  document.getElementById('offline-badge')?.classList.remove('show');
-  if (_pendingSync) {
-    _retryCount = 0;
-    clearTimeout(_retryTimer);
-    _doDriveUpload(true);
+// ── SINCRONIZACIÓN EN SEGUNDO PLANO (tras conectar Drive) ──
+async function _syncWithDriveInBackground() {
+  if (!navigator.onLine || !window._driveConnected) {
+    setSyncStatus(_pendingSync ? 'pending' : 'offline'); return;
   }
-});
-window.addEventListener('offline', () => {
-  setSyncStatus('offline');
-  _pendingSync = true;
-  document.getElementById('offline-badge')?.classList.add('show');
-});
+  setSyncStatus('syncing');
+  try {
+    const remote = await window.driveGetData();
 
+    if (!remote || !Array.isArray(remote.colecciones)) {
+      // Drive vacío o primer uso → subir lo local
+      if (STATE.colecciones.length > 0) {
+        // Marcar todas las colecciones con fotos como dirty para subir las fotos también
+        for (const col of STATE.colecciones) {
+          if (col.cromos.some(c => c.fotoFront || c.fotoBack))
+            window.driveMarkPhotosDirty?.(col.id);
+        }
+        await _doDriveUpload();
+      } else { setSyncStatus('ok'); }
+      return;
+    }
+
+    // Migración: si el remote viene del formato antiguo (un solo archivo con fotos)
+    // las fotos ya están dentro de remote.colecciones, las aceptamos tal cual.
+    const localTs  = _localSavedAt || 0;
+    const remoteTs = remote.savedAt || 0;
+
+    if (remoteTs > localTs) {
+      // Drive más reciente → reemplazar local
+      STATE.colecciones = remote.colecciones;
+      _localVersion     = remote.version || 0;
+      await dbSet('nc_local_' + MY_UID, {
+        colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs
+      }).catch(() => {});
+      _localSavedAt = remoteTs;
+      renderHome();
+      document.getElementById('modal-start')?.classList.remove('show');
+      setSyncStatus('ok');
+      toast('Datos cargados desde Drive ☁️', '✅');
+    } else if (_pendingSync || localTs > remoteTs) {
+      // Local más reciente o había sync pendiente → subir
+      for (const col of STATE.colecciones) {
+        if (col.cromos.some(c => c.fotoFront || c.fotoBack))
+          window.driveMarkPhotosDirty?.(col.id);
+      }
+      await _doDriveUpload(_pendingSync);
+    } else {
+      setSyncStatus('ok');
+    }
+  } catch (e) {
+    console.error('Drive sync error:', e?.message || e);
+    setSyncStatus('error');
+    _pendingSync = true;
+    if (_retryCount < MAX_RETRIES) {
+      const delay = RETRY_DELAYS[_retryCount++] || 120000;
+      _retryTimer = setTimeout(() => _syncWithDriveInBackground(), delay);
+    }
+  }
+}
 
 // ══════════════════════════════════════════
-//  LOAD
+//  LOAD — siempre desde IndexedDB primero
 // ══════════════════════════════════════════
+let _localSavedAt = 0;
 async function load() {
-  const uid = MY_UID;
   try { await openDB(); } catch {}
 
-  // 1. Cargar desde IndexedDB (fuente de verdad local, tiene fotos originales)
-  let localPayload = null;
+  // 1. Cargar desde IndexedDB (instantáneo, con fotos originales)
   try {
-    const raw = await dbGet('colpro_' + uid);
-    if (raw && Array.isArray(raw)) {
-      localPayload = { colecciones: raw, version: 0, savedAt: 0 };
-    } else if (raw && Array.isArray(raw.colecciones)) {
-      localPayload = raw;
+    const raw = await dbGet('nc_local_' + MY_UID);
+    // Compatibilidad con clave antigua
+    const raw2 = raw || await dbGet('colpro_' + MY_UID).catch(() => null);
+    let payload = null;
+    if (raw2 && Array.isArray(raw2)) {
+      payload = { colecciones: raw2, version: 0, savedAt: 0 };
+    } else if (raw2 && Array.isArray(raw2.colecciones)) {
+      payload = raw2;
+    }
+    if (payload?.colecciones?.length) {
+      STATE.colecciones = payload.colecciones;
+      _localVersion     = payload.version  || 0;
+      _localSavedAt     = payload.savedAt  || 0;
+      document.getElementById('modal-start')?.classList.remove('show');
     }
   } catch {}
-
-  if (localPayload?.colecciones?.length) {
-    STATE.colecciones = localPayload.colecciones;
-    _localVersion = localPayload.version || 0;
-    setSyncStatus('offline');
-    document.getElementById('modal-start')?.classList.remove('show');
-  }
 
   // Recuperar flag de sync pendiente de sesión anterior
   try {
@@ -1158,61 +1291,11 @@ async function load() {
     }
   } catch {}
 
-  // 2. Google Drive: solo si hay conexión y token disponible
-  if (!navigator.onLine) {
+  // 2. Drive: no bloqueamos el arranque. La sync ocurre en _syncWithDriveInBackground()
+  //    que es llamada por el callback OAuth cuando el usuario conecta Drive,
+  //    o si ya teníamos token se llama directamente.
+  if (!window._driveConnected) {
     setSyncStatus(_pendingSync ? 'pending' : 'offline');
-    return;
-  }
-
-  if (typeof window.driveGetData !== 'function' || !_driveAccessToken) {
-    // Drive no conectado aún — la app funciona sólo local
-    setSyncStatus('offline');
-    return;
-  }
-
-  setSyncStatus('syncing');
-  try {
-    const remotePayload = await window.driveGetData();
-
-    if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
-      // Drive vacío → subir lo local si existe
-      if (STATE.colecciones.length > 0) {
-        await _doDriveUpload();
-      } else {
-        setSyncStatus('ok');
-      }
-      return;
-    }
-
-    const localTs  = localPayload?.savedAt  || 0;
-    const remoteTs = remotePayload.savedAt   || 0;
-
-    if (remoteTs > localTs && remotePayload.colecciones.length > 0) {
-      // Drive más reciente → usarlo
-      STATE.colecciones = remotePayload.colecciones;
-      _localVersion = remotePayload.version || 0;
-      try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs }); } catch {}
-      if (STATE.currentColId) renderCromos(); else renderHome();
-      document.getElementById('modal-start')?.classList.remove('show');
-      setSyncStatus('ok');
-    } else if ((_pendingSync || localTs > remoteTs) && STATE.colecciones.length > 0) {
-      // Local más reciente o sync pendiente → subir a Drive
-      await _doDriveUpload(_pendingSync);
-    } else {
-      setSyncStatus('ok');
-    }
-
-  } catch (e) {
-    const msg = e?.message || String(e);
-    console.error('Drive — error al cargar:', msg);
-    setSyncStatus('error');
-    toast(`⚠️ Drive: ${msg.slice(0, 80)}`, '⚠️', 7000);
-    _pendingSync = true;
-    if (_retryCount < MAX_RETRIES) {
-      const delay = RETRY_DELAYS[_retryCount] || 180000;
-      _retryCount++;
-      _retryTimer = setTimeout(() => _doDriveUpload(true), delay);
-    }
   }
 }
 
@@ -1709,24 +1792,28 @@ function guardarCromo() {
   const tengo = document.getElementById('c-tengo').value !== 'false';
   const rep = tengo ? (parseInt(document.getElementById('c-rep').value)||0) : 0;
   const tipo = document.getElementById('c-tipo').value.trim(), equipo = document.getElementById('c-equipo').value.trim().toUpperCase();
+  let photosChanged = false;
   if (STATE.editingCromoId) {
     const c = getCromoById(STATE.editingCromoId);
     c.numero=num; c.nombre=nom; c.tipo=tipo; c.equipo=equipo; c.repetidos=rep; c.tengo=tengo;
     // Solo actualizar fotos si el usuario puso una nueva o la borró explícitamente
-    if (_fotoFront) c.fotoFront = _fotoFront;
-    else if (_fotoFrontDeleted) c.fotoFront = null;
-    if (_fotoBack) c.fotoBack = _fotoBack;
-    else if (_fotoBackDeleted) c.fotoBack = null;
+    if (_fotoFront) { c.fotoFront = _fotoFront; photosChanged = true; }
+    else if (_fotoFrontDeleted) { c.fotoFront = null; photosChanged = true; }
+    if (_fotoBack) { c.fotoBack = _fotoBack; photosChanged = true; }
+    else if (_fotoBackDeleted) { c.fotoBack = null; photosChanged = true; }
     addHistorial(STATE.currentColId, 'edit', 'Editado #' + num + ' ' + nom);
     toast('Cromo actualizado', '✅');
   } else {
+    photosChanged = !!(_fotoFront || _fotoBack);
     const nc = {id:uid(),numero:num,nombre:nom,tipo,equipo,repetidos:rep,tengo,sel:false,addedAt:Date.now(),
       fotoFront: _fotoFront||null, fotoBack: _fotoBack||null};
     col.cromos.push(nc); if (_cromoIndex) _cromoIndex.set(nc.id, nc);
     addHistorial(STATE.currentColId,'add',`Añadido #${num} ${nom}`);
     toast('Cromo añadido ✅');
   }
-  save(); renderCromos(); closeModal('modal-cromo'); fabFlash();
+  // Pasar colId como dirty solo si hubo cambios en fotos
+  save(photosChanged ? STATE.currentColId : null);
+  renderCromos(); closeModal('modal-cromo'); fabFlash();
 }
 function editCromo(id) {
   STATE.editingCromoId = id; const c = getCromoById(id);
@@ -1756,11 +1843,13 @@ function confirmarDelCromo() {
   const id = STATE.pendingDelCromoId;
   const col = getCol();
   const c = getCromoById(id);
+  const hadPhotos = !!(c?.fotoFront || c?.fotoBack);
   pushUndo('Eliminar cromo');
   addHistorial(STATE.currentColId, 'del', 'Eliminado #' + (c?.numero||'?') + ' ' + (c?.nombre||''));
   col.cromos = col.cromos.filter(c => c.id !== id);
   if (_cromoIndex) _cromoIndex.delete(id);
-  save(); renderCromos(); closeModal('modal-confirm-del-cromo');
+  save(hadPhotos ? STATE.currentColId : null);
+  renderCromos(); closeModal('modal-confirm-del-cromo');
   toastUndo('Cromo eliminado', '🗑️');
 }
 function toggleTengo(id) {
@@ -2677,16 +2766,32 @@ function cerrarBannerPWA() {
   try { localStorage.setItem('nc_pwa_ok','1'); } catch {}
 }
 
-// ── Init ──
-// _bootApp es llamado por el módulo Drive cuando está listo,
-// o directamente en load() si Drive no está conectado.
-window._bootApp = async () => {
-  setupDropZone();
-  initPWA();
-  await load();
-  renderHome();
-  hideSplash();
-};
+window.addEventListener('online', async () => {
+  document.getElementById('offline-badge')?.classList.remove('show');
+  if (_pendingSync && window._driveConnected) {
+    _retryCount = 0;
+    clearTimeout(_retryTimer);
+    _doDriveUpload(true);
+  }
+});
+window.addEventListener('offline', () => {
+  setSyncStatus('offline');
+  _pendingSync = true;
+  document.getElementById('offline-badge')?.classList.add('show');
+});
+
+// ── Único punto de arranque ──
+window.addEventListener('load', () => {
+  (async () => {
+    try { setupDropZone(); } catch(e) { console.warn('setupDropZone:', e); }
+    try { initPWA(); } catch(e) { console.warn('initPWA:', e); }
+    try { await load(); } catch(e) { console.warn('load:', e); }
+    try { renderHome(); } catch(e) { console.warn('renderHome:', e); }
+    hideSplash();
+    // Drive se inicializa después de que la app está visible y funcional
+    try { window.initDrive(); } catch(e) { console.warn('initDrive:', e); }
+  })().catch(e => { console.error('Boot error:', e); hideSplash(); });
+});
 </script>
 </body>
 </html>
