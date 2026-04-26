@@ -32,69 +32,65 @@ const fbApp = initializeApp({
 });
 const fbDb = getFirestore(fbApp);
 
-// ─── ESTRATEGIA: 1 documento por colección en "col_data/{colId}" ───
-// Más un doc índice "col_index/owner" con metadatos.
-// Así 587 cromos en 5 colecciones = 5 docs pequeños, nunca superamos 1MB.
+// ─── ESTRATEGIA FINAL: 1 documento por colección en "col_data/{colId}" ───
+// 14 colecciones = 14 documentos. Rápido, barato, dentro del límite de 1MB por doc.
+// Los cromos sin foto pesan ~1KB cada uno → 600 cromos ≈ 600KB por colección (OK).
+// Si hay fotos, se comprimen a ~30KB antes de subir.
 
 window._fbGetData = async () => {
-  let oldData = null, newData = null;
+  // Intentar leer formato ACTUAL (col_index/owner + col_data/{colId})
+  try {
+    const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
+    if (idxSnap.exists()) {
+      const idx = idxSnap.data();
+      const colIds = idx.colIds || [];
+      console.log(`📦 Leyendo ${colIds.length} colecciones de Firebase…`);
+      if (colIds.length > 0) {
+        const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
+        const colecciones = snaps.filter(s => s.exists()).map(s => s.data().coleccion).filter(Boolean);
+        console.log(`✅ Cargadas ${colecciones.length} colecciones (${colecciones.reduce((s,c)=>s+(c.cromos?.length||0),0)} cromos)`);
+        return { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
+      }
+      return { colecciones: [], version: idx.version || 0, savedAt: idx.savedAt || 0 };
+    }
+  } catch(e) { console.warn('Error leyendo formato actual:', e.message); }
 
-  // Intentar leer formato VIEJO (colecciones/owner)
+  // Fallback: formato muy viejo (colecciones/owner — todo en un doc)
   try {
     const oldSnap = await getDoc(doc(fbDb, 'colecciones', 'owner'));
     if (oldSnap.exists()) {
       const d = oldSnap.data();
       const arr = d.data || d.colecciones || null;
       if (Array.isArray(arr) && arr.length > 0) {
-        oldData = { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0 };
-        console.log(`📦 Formato viejo encontrado: ${arr.length} colecciones, savedAt=${new Date(oldData.savedAt).toLocaleString()}`);
+        console.log(`📦 Formato legacy encontrado: ${arr.length} colecciones — migrando…`);
+        return { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0, _needsMigration: true };
       }
     }
-  } catch(e) { console.warn('Error leyendo formato viejo:', e.message); }
+  } catch(e) { console.warn('Error leyendo formato legacy:', e.message); }
 
-  // Intentar leer formato NUEVO (col_index/owner + col_data/*)
-  try {
-    const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
-    if (idxSnap.exists()) {
-      const idx = idxSnap.data();
-      const colIds = idx.colIds || [];
-      console.log(`📦 Formato nuevo encontrado: índice con ${colIds.length} ids, savedAt=${new Date(idx.savedAt).toLocaleString()}`);
-      if (colIds.length > 0) {
-        const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
-        const colecciones = snaps.filter(s => s.exists()).map(s => s.data().coleccion).filter(Boolean);
-        if (colecciones.length > 0) {
-          newData = { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
-          console.log(`✅ Formato nuevo cargado: ${colecciones.length} colecciones`);
-        }
-      }
-    }
-  } catch(e) { console.warn('Error leyendo formato nuevo:', e.message); }
-
-  // Devolver el más reciente de los dos
-  if (oldData && newData) {
-    const winner = oldData.savedAt >= newData.savedAt ? oldData : newData;
-    console.log(`🏆 Usando ${oldData.savedAt >= newData.savedAt ? 'formato viejo' : 'formato nuevo'} (más reciente)`);
-    if (oldData.savedAt >= newData.savedAt) winner._needsMigration = true;
-    return winner;
-  }
-  if (oldData) { oldData._needsMigration = true; return oldData; }
-  if (newData) return newData;
   return null;
 };
 
 window._fbSetData = async (payload) => {
   const { colecciones, version, savedAt } = payload;
-  const batch = writeBatch(fbDb);
 
-  // 1. Un doc por colección
+  // Usamos batch para escrituras atómicas (máx 500 ops, tenemos 14+1 → OK)
+  const batch = writeBatch(fbDb);
   const colIds = [];
+
   for (const col of colecciones) {
-    const id = col.id || ('col_' + Math.random().toString(36).slice(2));
+    // Usar el ID propio de la colección como clave del documento
+    const id = String(col.id || col.nombre || Math.random().toString(36).slice(2)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
     colIds.push(id);
-    batch.set(doc(fbDb, 'col_data', id), { coleccion: col, updatedAt: Date.now() });
+    batch.set(doc(fbDb, 'col_data', id), {
+      coleccion: col,
+      nombre: col.nombre || '',
+      numCromos: col.cromos?.length || 0,
+      updatedAt: Date.now()
+    });
   }
 
-  // 2. Doc índice
+  // Documento índice: sólo metadatos ligeros, sin cromos
   batch.set(doc(fbDb, 'col_index', 'owner'), {
     colIds,
     version: version || 0,
@@ -103,6 +99,7 @@ window._fbSetData = async (payload) => {
   });
 
   await batch.commit();
+  console.log(`✅ Firebase: ${colecciones.length} colecciones guardadas (${colecciones.reduce((s,c)=>s+(c.cromos?.length||0),0)} cromos)`);
 };
 window._fbSaveShare = async (shareId, data) => {
   await setDoc(doc(fbDb, 'shares', shareId), { ...data, createdAt: Date.now() });
