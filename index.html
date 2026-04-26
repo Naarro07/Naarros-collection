@@ -37,34 +37,49 @@ const fbDb = getFirestore(fbApp);
 // Así 587 cromos en 5 colecciones = 5 docs pequeños, nunca superamos 1MB.
 
 window._fbGetData = async () => {
-  // 1. Leer índice (saber qué colecciones hay y versión global)
-  const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
+  let oldData = null, newData = null;
 
-  // Compatibilidad hacia atrás: si existe el doc viejo "colecciones/owner", migrarlo
-  if (!idxSnap.exists()) {
+  // Intentar leer formato VIEJO (colecciones/owner)
+  try {
     const oldSnap = await getDoc(doc(fbDb, 'colecciones', 'owner'));
     if (oldSnap.exists()) {
       const d = oldSnap.data();
-      const arr = d.data || d.colecciones || [];
+      const arr = d.data || d.colecciones || null;
       if (Array.isArray(arr) && arr.length > 0) {
-        return { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0, _needsMigration: true };
+        oldData = { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0 };
+        console.log(`📦 Formato viejo encontrado: ${arr.length} colecciones, savedAt=${new Date(oldData.savedAt).toLocaleString()}`);
       }
     }
-    return null;
+  } catch(e) { console.warn('Error leyendo formato viejo:', e.message); }
+
+  // Intentar leer formato NUEVO (col_index/owner + col_data/*)
+  try {
+    const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
+    if (idxSnap.exists()) {
+      const idx = idxSnap.data();
+      const colIds = idx.colIds || [];
+      console.log(`📦 Formato nuevo encontrado: índice con ${colIds.length} ids, savedAt=${new Date(idx.savedAt).toLocaleString()}`);
+      if (colIds.length > 0) {
+        const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
+        const colecciones = snaps.filter(s => s.exists()).map(s => s.data().coleccion).filter(Boolean);
+        if (colecciones.length > 0) {
+          newData = { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
+          console.log(`✅ Formato nuevo cargado: ${colecciones.length} colecciones`);
+        }
+      }
+    }
+  } catch(e) { console.warn('Error leyendo formato nuevo:', e.message); }
+
+  // Devolver el más reciente de los dos
+  if (oldData && newData) {
+    const winner = oldData.savedAt >= newData.savedAt ? oldData : newData;
+    console.log(`🏆 Usando ${oldData.savedAt >= newData.savedAt ? 'formato viejo' : 'formato nuevo'} (más reciente)`);
+    if (oldData.savedAt >= newData.savedAt) winner._needsMigration = true;
+    return winner;
   }
-
-  const idx = idxSnap.data();
-  const colIds = idx.colIds || [];
-  if (colIds.length === 0) return { colecciones: [], version: idx.version || 0, savedAt: idx.savedAt || 0 };
-
-  // 2. Leer cada colección en paralelo
-  const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
-  const colecciones = snaps
-    .filter(s => s.exists())
-    .map(s => s.data().coleccion)
-    .filter(Boolean);
-
-  return { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
+  if (oldData) { oldData._needsMigration = true; return oldData; }
+  if (newData) return newData;
+  return null;
 };
 
 window._fbSetData = async (payload) => {
@@ -1250,10 +1265,10 @@ async function load() {
     }
 
   } catch(e) {
-    console.warn('Firebase load error:', e.message || e);
+    const msg = e?.message || String(e);
+    console.error('❌ Firebase load error:', msg, e);
     setSyncStatus('error');
-    toast('Sin conexión con Firebase — usando datos locales', '⚠️');
-    // Programar reintento
+    toast(`⚠️ Firebase: ${msg.slice(0, 80)}`, '⚠️', 7000);
     _pendingSync = true;
     if (_retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAYS[_retryCount] || 180000;
