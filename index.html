@@ -20,7 +20,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getFirestore, doc, getDoc, setDoc, writeBatch, collection, getDocs, query, where } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const fbApp = initializeApp({
   apiKey: "AIzaSyCh4ZRRgWkuSQVvvfAnjDnCEx51t7AXRGg",
@@ -32,25 +32,62 @@ const fbApp = initializeApp({
 });
 const fbDb = getFirestore(fbApp);
 
-// Ruta exacta: colección "colecciones", documento "owner", campo "data"
+// ─── ESTRATEGIA: 1 documento por colección en "col_data/{colId}" ───
+// Más un doc índice "col_index/owner" con metadatos.
+// Así 587 cromos en 5 colecciones = 5 docs pequeños, nunca superamos 1MB.
+
 window._fbGetData = async () => {
-  const snap = await getDoc(doc(fbDb, 'colecciones', 'owner'));
-  if (!snap.exists()) return null;
-  const d = snap.data();
-  // El campo raíz es "data" (array de colecciones)
-  const arr = d.data || d.colecciones || null;
-  if (Array.isArray(arr)) {
-    return { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0 };
+  // 1. Leer índice (saber qué colecciones hay y versión global)
+  const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
+
+  // Compatibilidad hacia atrás: si existe el doc viejo "colecciones/owner", migrarlo
+  if (!idxSnap.exists()) {
+    const oldSnap = await getDoc(doc(fbDb, 'colecciones', 'owner'));
+    if (oldSnap.exists()) {
+      const d = oldSnap.data();
+      const arr = d.data || d.colecciones || [];
+      if (Array.isArray(arr) && arr.length > 0) {
+        return { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0, _needsMigration: true };
+      }
+    }
+    return null;
   }
-  return null;
+
+  const idx = idxSnap.data();
+  const colIds = idx.colIds || [];
+  if (colIds.length === 0) return { colecciones: [], version: idx.version || 0, savedAt: idx.savedAt || 0 };
+
+  // 2. Leer cada colección en paralelo
+  const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
+  const colecciones = snaps
+    .filter(s => s.exists())
+    .map(s => s.data().coleccion)
+    .filter(Boolean);
+
+  return { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
 };
+
 window._fbSetData = async (payload) => {
-  await setDoc(doc(fbDb, 'colecciones', 'owner'), {
-    data: payload.colecciones,
-    version: payload.version || 0,
-    savedAt: payload.savedAt || Date.now(),
+  const { colecciones, version, savedAt } = payload;
+  const batch = writeBatch(fbDb);
+
+  // 1. Un doc por colección
+  const colIds = [];
+  for (const col of colecciones) {
+    const id = col.id || ('col_' + Math.random().toString(36).slice(2));
+    colIds.push(id);
+    batch.set(doc(fbDb, 'col_data', id), { coleccion: col, updatedAt: Date.now() });
+  }
+
+  // 2. Doc índice
+  batch.set(doc(fbDb, 'col_index', 'owner'), {
+    colIds,
+    version: version || 0,
+    savedAt: savedAt || Date.now(),
     updatedAt: Date.now()
   });
+
+  await batch.commit();
 };
 window._fbSaveShare = async (shareId, data) => {
   await setDoc(doc(fbDb, 'shares', shareId), { ...data, createdAt: Date.now() });
@@ -1169,6 +1206,20 @@ async function load() {
   setSyncStatus('syncing');
   try {
     const remotePayload = await window._fbGetData();
+
+    // Migración automática del formato viejo (todo en un doc) al nuevo (1 doc por colección)
+    if (remotePayload?._needsMigration) {
+      console.log('🔄 Migrando datos de Firebase al nuevo formato…');
+      STATE.colecciones = remotePayload.colecciones;
+      _localVersion = remotePayload.version || 0;
+      try { await dbSet('colpro_' + uid, { colecciones: STATE.colecciones, version: _localVersion, savedAt: remotePayload.savedAt }); } catch {}
+      if (STATE.currentColId) renderCromos(); else renderHome();
+      document.getElementById('modal-start')?.classList.remove('show');
+      // Subir en nuevo formato
+      await _doFirebaseUpload(false);
+      toast('Datos migrados al nuevo formato ☁️✅', '✅');
+      return;
+    }
 
     if (!remotePayload || !Array.isArray(remotePayload.colecciones)) {
       // Firebase vacío → subir lo que tenemos localmente
