@@ -97,6 +97,33 @@
     const s = document.createElement('script'); s.src="https://accounts.google.com/gsi/client"; s.onload=initDrive; document.head.appendChild(s);
   });
 </script>
+<script>
+  // Esta función forzará la aparición del selector de archivos para importar
+  window.importarCopiaSeguridad = function() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = e => {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const data = JSON.parse(event.target.result);
+          // Guardamos en la memoria local
+          await _db.put('kv', data, 'full_data');
+          // Y forzamos el guardado en Google Drive
+          if (window._fbSetData) await _fbSetData(data);
+          alert("¡Datos importados y sincronizados con Drive con éxito!");
+          location.reload(); // Recargamos para ver los cromos
+        } catch (err) {
+          alert("Error al leer el archivo JSON");
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+</script>
 <style>
 /* ─── TEMAS ─── */
 :root {
