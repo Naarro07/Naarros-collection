@@ -15,103 +15,87 @@
 <meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(), geolocation=()">
 <link rel="apple-touch-icon" id="apple-touch-icon">
 <link rel="manifest" id="pwa-manifest">
-<title>Naarro's Collection</title>
+<title>CollectionsDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, getDoc, setDoc, writeBatch, collection, getDocs, query, where } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+<script>
+  const CLIENT_ID = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
+  const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+  const FILE_NAME = 'naarros_collection_data.json';
 
-const fbApp = initializeApp({
-  apiKey: "AIzaSyCh4ZRRgWkuSQVvvfAnjDnCEx51t7AXRGg",
-  authDomain: "naarros-collection.firebaseapp.com",
-  projectId: "naarros-collection",
-  storageBucket: "naarros-collection.firebasestorage.app",
-  messagingSenderId: "811052151364",
-  appId: "1:811052151364:web:1332a3c0fb41544b338211"
-});
-const fbDb = getFirestore(fbApp);
+  let tokenClient;
+  let accessToken = null;
+  let gDriveFileId = null;
 
-// ─── ESTRATEGIA FINAL: 1 documento por colección en "col_data/{colId}" ───
-// 14 colecciones = 14 documentos. Rápido, barato, dentro del límite de 1MB por doc.
-// Los cromos sin foto pesan ~1KB cada uno → 600 cromos ≈ 600KB por colección (OK).
-// Si hay fotos, se comprimen a ~30KB antes de subir.
-
-window._fbGetData = async () => {
-  // Intentar leer formato ACTUAL (col_index/owner + col_data/{colId})
-  try {
-    const idxSnap = await getDoc(doc(fbDb, 'col_index', 'owner'));
-    if (idxSnap.exists()) {
-      const idx = idxSnap.data();
-      const colIds = idx.colIds || [];
-      console.log(`📦 Leyendo ${colIds.length} colecciones de Firebase…`);
-      if (colIds.length > 0) {
-        const snaps = await Promise.all(colIds.map(id => getDoc(doc(fbDb, 'col_data', id))));
-        const colecciones = snaps.filter(s => s.exists()).map(s => s.data().coleccion).filter(Boolean);
-        console.log(`✅ Cargadas ${colecciones.length} colecciones (${colecciones.reduce((s,c)=>s+(c.cromos?.length||0),0)} cromos)`);
-        return { colecciones, version: idx.version || 0, savedAt: idx.savedAt || 0 };
+  // FUNCIONES DE CARGA Y GUARDADO (El motor de la app)
+  window._fbGetData = async () => {
+    if (!accessToken) return null;
+    try {
+      const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and trashed=false`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+      const data = await response.json();
+      if (data.files && data.files.length > 0) {
+        gDriveFileId = data.files[0].id;
+        const res = await fetch(`https://www.googleapis.com/drive/v3/files/${gDriveFileId}?alt=media`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        });
+        return await res.json();
       }
-      return { colecciones: [], version: idx.version || 0, savedAt: idx.savedAt || 0 };
-    }
-  } catch(e) { console.warn('Error leyendo formato actual:', e.message); }
+    } catch (e) { console.error("Error Drive:", e); }
+    return null;
+  };
 
-  // Fallback: formato muy viejo (colecciones/owner — todo en un doc)
-  try {
-    const oldSnap = await getDoc(doc(fbDb, 'colecciones', 'owner'));
-    if (oldSnap.exists()) {
-      const d = oldSnap.data();
-      const arr = d.data || d.colecciones || null;
-      if (Array.isArray(arr) && arr.length > 0) {
-        console.log(`📦 Formato legacy encontrado: ${arr.length} colecciones — migrando…`);
-        return { colecciones: arr, version: d.version || 0, savedAt: d.savedAt || d.updatedAt || 0, _needsMigration: true };
+  window._fbSetData = async (payload) => {
+    if (!accessToken) return;
+    try {
+      const metadata = { name: FILE_NAME, mimeType: 'application/json' };
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', blob);
+
+      let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+      let method = 'POST';
+      if (gDriveFileId) {
+        url = `https://www.googleapis.com/upload/drive/v3/files/${gDriveFileId}?uploadType=multipart`;
+        method = 'PATCH';
       }
-    }
-  } catch(e) { console.warn('Error leyendo formato legacy:', e.message); }
 
-  return null;
-};
+      await fetch(url, { method, headers: { 'Authorization': `Bearer ${accessToken}` }, body: form });
+      console.log("✅ Guardado en Drive");
+    } catch (e) { console.error("Error al guardar:", e); }
+  };
 
-window._fbSetData = async (payload) => {
-  const { colecciones, version, savedAt } = payload;
+  // Funciones vacías para no romper el resto de la app
+  window._fbSaveShare = async () => { alert("Compartir no disponible en modo Drive"); };
+  window._fbGetShare = async () => null;
 
-  // Usamos batch para escrituras atómicas (máx 500 ops, tenemos 14+1 → OK)
-  const batch = writeBatch(fbDb);
-  const colIds = [];
-
-  for (const col of colecciones) {
-    // Usar el ID propio de la colección como clave del documento
-    const id = String(col.id || col.nombre || Math.random().toString(36).slice(2)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
-    colIds.push(id);
-    batch.set(doc(fbDb, 'col_data', id), {
-      coleccion: col,
-      nombre: col.nombre || '',
-      numCromos: col.cromos?.length || 0,
-      updatedAt: Date.now()
+  // INICIALIZACIÓN DE LIBRERÍAS
+  function initDrive() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID, scope: SCOPES,
+      callback: (resp) => {
+        if (resp.error) return;
+        accessToken = resp.access_token;
+        window._fbReady = true;
+        if (window._bootApp) window._bootApp();
+        document.getElementById('splash').classList.add('hidden');
+      },
     });
+    // Intentar arrancar
+    const label = document.getElementById('storage-label');
+    if (label) {
+      label.innerHTML = '<button onclick="tokenClient.requestAccessToken()" style="background:none;border:none;color:var(--accent);font-weight:bold;cursor:pointer;padding:0">🔌 Conectar Drive</button>';
+      document.querySelector('.storage-info .dot').style.background = 'var(--red)';
+    }
+    document.getElementById('splash').classList.add('hidden');
   }
 
-  // Documento índice: sólo metadatos ligeros, sin cromos
-  batch.set(doc(fbDb, 'col_index', 'owner'), {
-    colIds,
-    version: version || 0,
-    savedAt: savedAt || Date.now(),
-    updatedAt: Date.now()
+  // Cargar scripts de Google al iniciar
+  window.addEventListener('load', () => {
+    const s = document.createElement('script'); s.src="https://accounts.google.com/gsi/client"; s.onload=initDrive; document.head.appendChild(s);
   });
-
-  await batch.commit();
-  console.log(`✅ Firebase: ${colecciones.length} colecciones guardadas (${colecciones.reduce((s,c)=>s+(c.cromos?.length||0),0)} cromos)`);
-};
-window._fbSaveShare = async (shareId, data) => {
-  await setDoc(doc(fbDb, 'shares', shareId), { ...data, createdAt: Date.now() });
-};
-window._fbGetShare = async (shareId) => {
-  const snap = await getDoc(doc(fbDb, 'shares', shareId));
-  return snap.exists() ? snap.data() : null;
-};
-
-// Firebase listo — arrancar la app desde aquí para garantizar que las funciones existen
-window._fbReady = true;
-window._bootApp(); // llamar al arranque definido en el script principal
 </script>
 <style>
 /* ─── TEMAS ─── */
