@@ -531,13 +531,15 @@ select.form-input { cursor: pointer; }
 .foto-cromo-wrap { display: flex; flex-direction: column; gap: 10px; }
 .foto-side-row { display: flex; gap: 10px; }
 .foto-side { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.foto-side label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
-.foto-preview { width: 100%; aspect-ratio: 2/3; background: var(--surface3); border: 2px dashed var(--border); border-radius: var(--radius-sm); overflow: hidden; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.18s; position: relative; }
-.foto-preview:hover { border-color: var(--accent); }
+.foto-side-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
+.foto-preview { width: 100%; aspect-ratio: 2/3; background: var(--surface3); border: 2px dashed var(--border); border-radius: var(--radius-sm); overflow: hidden; display: flex; align-items: center; justify-content: center; transition: border-color 0.18s; position: relative; }
 .foto-preview img { width: 100%; height: 100%; object-fit: cover; }
 .foto-preview .foto-icon { font-size: 28px; color: var(--text3); pointer-events: none; }
 .foto-preview .foto-del { position: absolute; top: 5px; right: 5px; width: 26px; height: 26px; border-radius: 50%; background: rgba(220,30,50,0.85); color: #fff; border: none; cursor: pointer; font-size: 15px; font-weight: 700; display: flex; align-items: center; justify-content: center; z-index: 2; backdrop-filter: blur(2px); transition: background 0.15s; }
 .foto-preview .foto-del:hover { background: var(--red); }
+.foto-btns-row { display: flex; gap: 6px; }
+.foto-btn-label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 4px; border-radius: var(--radius-sm); border: 1.5px solid var(--border); background: var(--surface2); color: var(--text2); font-size: 18px; cursor: pointer; transition: all 0.15s; text-align: center; -webkit-tap-highlight-color: transparent; }
+.foto-btn-label:hover, .foto-btn-label:active { border-color: var(--accent); background: var(--accent-glow); }
 
 /* ─── RECORTE DE FONDO ─── */
 .foto-recorte-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1.5px solid rgba(34,211,163,0.4); background: rgba(34,211,163,0.08); color: var(--green); font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.18s; }
@@ -788,24 +790,42 @@ select.form-input { cursor: pointer; }
       </div>
       <input type="hidden" id="c-tengo" value="true">
     </div>
-    <!-- Fotos + AI -->
+    <!-- Fotos -->
     <div class="form-group">
       <label>Fotos del cromo</label>
       <div class="foto-cromo-wrap">
         <div class="foto-side-row">
           <div class="foto-side">
-            <label>Delantera</label>
-            <div class="foto-preview" id="foto-front-preview" onclick="document.getElementById('foto-front-input').click()">
+            <label class="foto-side-label">Delantera</label>
+            <div class="foto-preview" id="foto-front-preview">
               <span class="foto-icon">📷</span>
             </div>
-            <input type="file" id="foto-front-input" accept="image/*" style="display:none" onchange="onFotoChange('front',this)">
+            <div class="foto-btns-row">
+              <label class="foto-btn-label" title="Cámara">
+                📷
+                <input type="file" id="foto-front-input" accept="image/*" capture="environment" style="display:none" onchange="onFotoChange('front',this)">
+              </label>
+              <label class="foto-btn-label" title="Galería / Archivos">
+                🖼
+                <input type="file" id="foto-front-input-gallery" accept="image/*" style="display:none" onchange="onFotoChange('front',this)">
+              </label>
+            </div>
           </div>
           <div class="foto-side">
-            <label>Trasera</label>
-            <div class="foto-preview" id="foto-back-preview" onclick="document.getElementById('foto-back-input').click()">
+            <label class="foto-side-label">Trasera</label>
+            <div class="foto-preview" id="foto-back-preview">
               <span class="foto-icon">📷</span>
             </div>
-            <input type="file" id="foto-back-input" accept="image/*" style="display:none" onchange="onFotoChange('back',this)">
+            <div class="foto-btns-row">
+              <label class="foto-btn-label" title="Cámara">
+                📷
+                <input type="file" id="foto-back-input" accept="image/*" capture="environment" style="display:none" onchange="onFotoChange('back',this)">
+              </label>
+              <label class="foto-btn-label" title="Galería / Archivos">
+                🖼
+                <input type="file" id="foto-back-input-gallery" accept="image/*" style="display:none" onchange="onFotoChange('back',this)">
+              </label>
+            </div>
           </div>
         </div>
         <!-- Recorte de fondo -->
@@ -2029,8 +2049,10 @@ function resetFotos() {
   ['front','back'].forEach(side => {
     const prev = document.getElementById(`foto-${side}-preview`);
     if (prev) prev.innerHTML = '<span class="foto-icon">📷</span>';
-    const inp = document.getElementById(`foto-${side}-input`);
-    if (inp) inp.value = '';
+    ['', '-gallery'].forEach(sfx => {
+      const inp = document.getElementById(`foto-${side}-input${sfx}`);
+      if (inp) inp.value = '';
+    });
   });
   const wrap = document.getElementById('foto-recorte-wrap');
   if (wrap) wrap.style.display = 'none';
@@ -2039,7 +2061,17 @@ function resetFotos() {
 
 function setFotoPreview(side, dataUrl, sinFondo = false) {
   const prev = document.getElementById(`foto-${side}-preview`);
-  prev.innerHTML = `<img src="${dataUrl}" alt="foto" class="${sinFondo ? 'sin-fondo' : ''}"><button class="foto-del" onclick="event.stopPropagation();quitarFoto('${side}')">×</button>`;
+  prev.innerHTML = `<img src="${dataUrl}" alt="foto" class="${sinFondo ? 'sin-fondo' : ''}" onclick="abrirLightbox('${side}')" style="cursor:zoom-in"><button class="foto-del" onclick="event.stopPropagation();quitarFoto('${side}')">×</button>`;
+}
+
+function abrirLightbox(side) {
+  const src = side === 'front' ? _fotoFront : _fotoBack;
+  if (!src) return;
+  const lb = document.createElement('div');
+  lb.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:20px;';
+  lb.innerHTML = `<img src="${src}" style="max-width:100%;max-height:100%;border-radius:10px;object-fit:contain;">`;
+  lb.onclick = () => lb.remove();
+  document.body.appendChild(lb);
 }
 
 function quitarFoto(side) {
@@ -2047,8 +2079,10 @@ function quitarFoto(side) {
   else { _fotoBack = null; _fotoBackDeleted = true; }
   const prev = document.getElementById(`foto-${side}-preview`);
   if (prev) prev.innerHTML = '<span class="foto-icon">📷</span>';
-  const inp = document.getElementById(`foto-${side}-input`);
-  if (inp) inp.value = '';
+  ['', '-gallery'].forEach(sfx => {
+    const inp = document.getElementById(`foto-${side}-input${sfx}`);
+    if (inp) inp.value = '';
+  });
   if (!_fotoFront && !_fotoBack) {
     const wrap = document.getElementById('foto-recorte-wrap');
     if (wrap) wrap.style.display = 'none';
@@ -2067,12 +2101,29 @@ function setRecorteStatus(msg, cls = '') {
 
 function onFotoChange(side, input) {
   const file = input.files[0]; if (!file) return;
+  _procesarArchivoFoto(side, file);
+}
+
+// Pegar imagen desde portapapeles (Ctrl+V / Cmd+V) cuando el modal está abierto
+document.addEventListener('paste', e => {
+  const modal = document.getElementById('modal-cromo');
+  if (!modal?.classList.contains('show') && !modal?.closest('.overlay.show')) return;
+  const item = Array.from(e.clipboardData?.items || []).find(i => i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  // Pegar en delantera si está vacía, si no en trasera
+  const side = !_fotoFront ? 'front' : 'back';
+  _procesarArchivoFoto(side, item.getAsFile());
+  toast(`📋 Foto pegada en ${side === 'front' ? 'delantera' : 'trasera'}`, '✅', 2000);
+});
+
+function _procesarArchivoFoto(side, file) {
+  if (!file) return;
   const reader = new FileReader();
   reader.onload = async e => {
     const dataUrl = await comprimirImagen(e.target.result);
     if (side === 'front') _fotoFront = dataUrl; else _fotoBack = dataUrl;
     setFotoPreview(side, dataUrl);
-    // Mostrar botón de recorte
     document.getElementById('foto-recorte-wrap').style.display = 'flex';
     setRecorteStatus('Foto cargada. Pulsa "Recortar fondo" para eliminar el fondo automáticamente.');
   };
