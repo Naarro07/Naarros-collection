@@ -1370,6 +1370,12 @@ function openColeccion(id) {
     const d = document.getElementById('csort-dir-btn'); if (d) { d.style.display = 'flex'; d.textContent = '↑'; }
   }, 0);
   updateSelUI(); renderCromos(); showView('view-col');
+  // Scroll al inicio al abrir la colección
+  requestAnimationFrame(() => {
+    const el = document.getElementById('view-col');
+    if (el) el.scrollTop = 0;
+    window.scrollTo(0, 0);
+  });
 }
 
 function getCol() { return STATE.colecciones.find(c => c.id === STATE.currentColId); }
