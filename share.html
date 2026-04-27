@@ -7,28 +7,7 @@
 <title>Lista de intercambio · CollectionDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 
-<!-- Firebase SDK -->
-<script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
-const fbApp = initializeApp({
-  apiKey: "AIzaSyCh4ZRRgWkuSQVvvfAnjDnCEx51t7AXRGg",
-  authDomain: "naarros-collection.firebaseapp.com",
-  projectId: "naarros-collection",
-  storageBucket: "naarros-collection.firebasestorage.app",
-  messagingSenderId: "811052151364",
-  appId: "1:811052151364:web:1332a3c0fb41544b338211"
-});
-const fbDb = getFirestore(fbApp);
-
-window._fbGetShare = async (id) => {
-  const snap = await getDoc(doc(fbDb, 'shares', id));
-  return snap.exists() ? snap.data() : null;
-};
-window._fbReady = true;
-window.dispatchEvent(new Event('fb-ready'));
-</script>
 
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -116,7 +95,7 @@ body{font-family:'Outfit',sans-serif;background:#0d0f14;color:#e8eaf0;min-height
 <div id="error">
   <div class="ei">😕</div>
   <h2>Lista no encontrada</h2>
-  <p>Este enlace puede haber expirado o ser incorrecto.</p>
+  <p>Este enlace ha expirado o es incorrecto. Pide al dueño de la colección que genere un nuevo enlace.</p>
 </div>
 
 <div class="page" id="page" style="display:none"></div>
@@ -251,30 +230,16 @@ function renderPage(data) {
 
 async function init() {
   const params = new URLSearchParams(location.search);
-  const shareId = params.get('id');
   const rawData = params.get('data');
 
   if (rawData) {
-    try { renderPage(JSON.parse(decodeURIComponent(rawData))); } catch { showError(); }
+    try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
+    catch { showError(); }
     return;
   }
 
-  if (!shareId) { showError(); return; }
-
-  if (!window._fbReady) {
-    // FIX: timeout de seguridad — si Firebase no carga en 10s, mostrar error
-    const fbTimeout = setTimeout(() => {
-      console.warn('Firebase timeout en share.html');
-      showError();
-    }, 10000);
-    await new Promise(res => window.addEventListener('fb-ready', () => { clearTimeout(fbTimeout); res(); }, { once: true }));
-  }
-
-  try {
-    const data = await window._fbGetShare(shareId);
-    if (!data || !data.n) { showError(); return; }
-    renderPage(data);
-  } catch { showError(); }
+  // Enlace antiguo con ?id= (Firebase) — ya no soportado
+  showError();
 }
 
 init();
