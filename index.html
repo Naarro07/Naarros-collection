@@ -2336,6 +2336,28 @@ function _buildWAText(colId) {
   return lineas.join('\n');
 }
 
+// ── Comprimir JSON → base64 para URL corta ──
+async function _compressToB64(obj) {
+  const json = JSON.stringify(obj);
+  const stream = new CompressionStream('deflate-raw');
+  const writer = stream.writable.getWriter();
+  writer.write(new TextEncoder().encode(json));
+  writer.close();
+  const chunks = [];
+  const reader = stream.readable.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
+  let offset = 0;
+  for (const c of chunks) { bytes.set(c, offset); offset += c.length; }
+  // base64url (sin +/= que rompen URLs)
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
@@ -2349,16 +2371,29 @@ async function abrirIntercambio(colId) {
 
   const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
 
-  // Compartir mediante datos inline en la URL (no requiere backend)
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
-  const link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
+
+  // Intentar URL comprimida primero; fallback a JSON plano si el navegador no soporta CompressionStream
+  let link;
+  try {
+    const compressed = await _compressToB64(shareData);
+    link = base + '?z=' + compressed;
+  } catch {
+    link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
+  }
 
   document.getElementById('share-link-input').value = link;
 
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=L&margin=4&data=${encodeURIComponent(link)}`;
-  document.getElementById('qr-container').innerHTML = `<img src="${qrUrl}" width="200" height="200"
-    style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;"
-    onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>QR no disponible — copia el enlace</p>'">`;
+  // QR solo funciona bien con URLs cortas (< ~1500 chars)
+  const qrContainer = document.getElementById('qr-container');
+  if (link.length <= 1500) {
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=L&margin=4&data=${encodeURIComponent(link)}`;
+    qrContainer.innerHTML = `<img src="${qrUrl}" width="200" height="200"
+      style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;"
+      onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>QR no disponible — copia el enlace</p>'">`;
+  } else {
+    qrContainer.innerHTML = `<p style="color:var(--text3);font-size:12px;text-align:center;padding:16px">Lista muy larga para QR — usa el botón de copiar enlace</p>`;
+  }
 
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
