@@ -2358,6 +2358,17 @@ async function _compressToB64(obj) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
+// ── Acortar URL via TinyURL (sin API key) ──
+async function _shortenUrl(url) {
+  try {
+    const res = await fetch(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`);
+    if (!res.ok) throw new Error('tinyurl error');
+    const short = await res.text();
+    if (short.startsWith('https://tinyurl.com/')) return short.trim();
+  } catch(e) { console.warn('URL shortener failed:', e); }
+  return null;
+}
+
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
@@ -2373,7 +2384,6 @@ async function abrirIntercambio(colId) {
 
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
 
-  // Intentar URL comprimida primero; fallback a JSON plano si el navegador no soporta CompressionStream
   let link;
   try {
     const compressed = await _compressToB64(shareData);
@@ -2384,21 +2394,30 @@ async function abrirIntercambio(colId) {
 
   document.getElementById('share-link-input').value = link;
 
-  // QR solo funciona bien con URLs cortas (< ~1500 chars)
+  // Generar QR con URL acortada para que sea legible en móvil
   const qrContainer = document.getElementById('qr-container');
-  if (link.length <= 1500) {
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=L&margin=4&data=${encodeURIComponent(link)}`;
-    qrContainer.innerHTML = `<img src="${qrUrl}" width="200" height="200"
-      style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;"
-      onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>QR no disponible — copia el enlace</p>'">`;
-  } else {
-    qrContainer.innerHTML = `<p style="color:var(--text3);font-size:12px;text-align:center;padding:16px">Lista muy larga para QR — usa el botón de copiar enlace</p>`;
-  }
+  qrContainer.innerHTML = `<p style="color:var(--text3);font-size:12px;text-align:center;padding:16px">⏳ Generando QR…</p>`;
+
+  openModal('modal-intercambio');
 
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
   if (el) el.textContent = waText;
-  openModal('modal-intercambio');
+
+  // Acortar en segundo plano y generar QR
+  (async () => {
+    const shortUrl = await _shortenUrl(link);
+    const qrTarget = shortUrl || link;
+    if (!shortUrl) {
+      console.warn('No se pudo acortar, usando URL larga para QR');
+    }
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&ecc=M&margin=2&data=${encodeURIComponent(qrTarget)}`;
+    qrContainer.innerHTML = `
+      <img src="${qrUrl}" width="240" height="240"
+        style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:10px;"
+        onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>⚠️ QR no disponible — copia el enlace</p>'">
+      ${shortUrl ? `<p style="text-align:center;font-size:11px;color:var(--text3);margin-top:8px">${shortUrl}</p>` : ''}`;
+  })();
 }
 function copiarEnlace() {
   const v = document.getElementById('share-link-input').value;
