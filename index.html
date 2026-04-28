@@ -21,19 +21,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
 const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
-
 let _driveTokenClient;
 let _driveAccessToken = null;
-
 const _driveIds = {};
-
 window._dirtyPhotos = new Set();
-
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -47,7 +42,6 @@ async function _driveFileId(name) {
   }
   return null;
 }
-
 async function _driveUploadJSON(name, obj) {
   const existing = await _driveFileId(name);
   const meta = { name, mimeType: 'application/json' };
@@ -67,7 +61,6 @@ async function _driveUploadJSON(name, obj) {
   const d = await res.json();
   _driveIds[name] = d.id;  // guardar fileId para futuros PATCH
 }
-
 async function _driveDownloadJSON(name) {
   const fid = await _driveFileId(name);
   if (!fid) return null;
@@ -78,7 +71,6 @@ async function _driveDownloadJSON(name) {
   if (!r.ok) return null;
   return await r.json();
 }
-
 window.driveGetData = async () => {
   if (!_driveAccessToken) return null;
   try {
@@ -105,7 +97,6 @@ window.driveGetData = async () => {
     return null;
   }
 };
-
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   if (!_driveAccessToken) return;
 
@@ -119,7 +110,6 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
-  // 2. Fotos: subir en cola con máximo 3 en paralelo para no saturar
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -132,20 +122,16 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
         .catch(e => console.error(`Drive — error fotos ${col.id}:`, e))
     );
   }
-  // Ejecutar en grupos de 3
   for (let i = 0; i < photoJobs.length; i += 3) {
     await Promise.all(photoJobs.slice(i, i + 3).map(fn => fn()));
   }
 };
 
-// ── Marcar colección como con fotos modificadas ──
 window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
-// ── Estado visual del indicador ──
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
-  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
 }
 
 window.initDrive = () => {
@@ -194,7 +180,6 @@ window.initDrive = () => {
 };
 </script>
 <style>
-/* ─── TEMAS ─── */
 :root {
   --bg: #0d0f14; --surface: #161921; --surface2: #1e2330; --surface3: #252b3b;
   --border: #2a3148; --accent: #4f8cff; --accent2: #7c5cfc;
