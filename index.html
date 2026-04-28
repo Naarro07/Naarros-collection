@@ -20,6 +20,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
+
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
@@ -28,10 +29,13 @@ const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 let _driveTokenClient;
 let _driveAccessToken = null;
 
+// Caché de fileIds en Drive  { filename → fileId }
 const _driveIds = {};
 
+// Conjunto de colIds cuyas fotos han cambiado desde el último guardado
 window._dirtyPhotos = new Set();
 
+// ── Bajo nivel: buscar o crear fileId por nombre ──
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -46,6 +50,7 @@ async function _driveFileId(name) {
   return null;
 }
 
+// ── Bajo nivel: subir/actualizar un JSON en Drive ──
 async function _driveUploadJSON(name, obj) {
   const existing = await _driveFileId(name);
   const meta = { name, mimeType: 'application/json' };
@@ -78,6 +83,9 @@ async function _driveDownloadJSON(name) {
   return await r.json();
 }
 
+// ── API pública: obtener todos los datos desde Drive ──
+//    Devuelve { colecciones, version, savedAt } con fotos incluidas
+//    o null si Drive no tiene nada todavía.
 window.driveGetData = async () => {
   if (!_driveAccessToken) return null;
   try {
@@ -105,9 +113,11 @@ window.driveGetData = async () => {
   }
 };
 
+// ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   if (!_driveAccessToken) return;
 
+  // 1. Construir payload de meta SIN fotos
   const metaCols = colecciones.map(col => ({
     ...col,
     cromos: col.cromos.map(c => {
@@ -117,6 +127,7 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
+  // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -134,13 +145,18 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }
 };
 
+// ── Marcar colección como con fotos modificadas ──
 window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
+// ── Estado visual del indicador ──
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
+  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
 }
 
+// ── Inicializar OAuth y mostrar botón de conexión ──
+// Espera activamente a que el script de Google cargue (async defer puede tardar).
 window.initDrive = () => {
   const MAX_WAIT_MS = 10000;  // esperar hasta 10s a que cargue GSI
   const START = Date.now();
@@ -2176,7 +2192,6 @@ function _procesarArchivoFoto(side, file) {
   reader.readAsDataURL(file);
 }
 
-// ── Recorte de fondo: remove.bg (API gratuita 50/mes) + fallback canvas ──
 async function recortarFondo() {
   if (!_fotoFront && !_fotoBack) return;
   const btn = document.getElementById('btn-recortar');
@@ -2185,7 +2200,6 @@ async function recortarFondo() {
 
   let ok = 0, fail = 0;
 
-  // Intentar con remove.bg para cada foto que exista
   for (const side of ['front', 'back']) {
     const dataUrl = side === 'front' ? _fotoFront : _fotoBack;
     if (!dataUrl) continue;
@@ -2223,11 +2237,8 @@ async function recortarFondo() {
 }
 
 async function quitarFondoRemoveBg(dataUrl) {
-  // remove.bg API — clave pública de demostración (50 imágenes gratis/mes por cuenta)
-  // El usuario puede poner su propia API key aquí si se queda sin créditos
   const REMOVEBG_KEY = 'hUoKHmFiVZiY6FWbsMNMhokS'; // demo key — sustituir si agota
 
-  // Convertir dataUrl a Blob
   const res = await fetch(dataUrl);
   const blob = await res.blob();
 
@@ -2379,7 +2390,6 @@ function abrirStats() {
   `;
   openModal('modal-stats');
 }
-
 // ══════════════════════════════════════════
 //  💬 GENERADOR DE TEXTO WHATSAPP
 // ══════════════════════════════════════════
@@ -2397,7 +2407,6 @@ function _buildWAText(colId) {
   lineas.push(`_Generado con Naarro's Collection_ 🃏`);
   return lineas.join('\n');
 }
-
 // ── Comprimir JSON → base64 para URL corta ──
 async function _compressToB64(obj) {
   const json = JSON.stringify(obj);
@@ -2419,7 +2428,6 @@ async function _compressToB64(obj) {
   return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
-
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
@@ -2432,8 +2440,7 @@ async function abrirIntercambio(colId) {
     .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
 
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
-
-  // ── Enlace completo (para copiar/compartir): incluye nombres, equipos, tipos
+  // ── Enlace completo para copiar: con nombres, equipos, tipos ──
   const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
   let linkCompleto;
   try {
@@ -2442,14 +2449,18 @@ async function abrirIntercambio(colId) {
     linkCompleto = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
   }
   document.getElementById('share-link-input').value = linkCompleto;
-
-  // ── URL mínima para QR: solo números separados por coma, sin nombres
-  // Formato: share.html?q=NOMBRE|EMOJI|r:1,2,3|f:4,5,6
-  // ~10x más corta que el enlace completo → siempre cabe en un QR legible
+  // ── URL mínima para QR: solo números, comprimida ──
+  // "nombre§emoji§r:1,2,3§f:4,5,6" → comprimido → base64url → ~200-400 chars siempre
   const rNums = repes.map(c => c.num).join(',');
   const fNums = faltas.map(c => c.num).join(',');
-  const qPayload = `${col.name}|${col.emoji}|r:${rNums}|f:${fNums}`;
-  const linkQR = base + '?q=' + encodeURIComponent(qPayload);
+  const minPayload = `${col.name}§${col.emoji||'🃏'}§r:${rNums}§f:${fNums}`;
+  let linkQR;
+  try {
+    linkQR = base + '?q=' + (await _compressToB64(minPayload));
+  } catch {
+    // fallback sin comprimir (solo funciona con listas pequeñas)
+    linkQR = base + '?q=' + encodeURIComponent(minPayload);
+  }
 
   const qrContainer = document.getElementById('qr-container');
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&ecc=M&margin=2&data=${encodeURIComponent(linkQR)}`;
@@ -2473,7 +2484,6 @@ function copiarWAIntercambio() {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('¡Copiado!','✅');
   });
 }
-
 // ══════════════════════════════════════════
 //  💬 GENERADOR DE TEXTO WHATSAPP
 // ══════════════════════════════════════════
@@ -2528,7 +2538,6 @@ function copiarTextoWA() {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('¡Copiado!', '✅');
   });
 }
-
 // ══════════════════════════════════════════
 //  ☁️ GOOGLE DRIVE (flujo manual)
 // ══════════════════════════════════════════
@@ -2560,7 +2569,6 @@ function importarDesdeDrive() {
     document.getElementById('gdrive-import-text').value = '';
   } catch { toast('Error al parsear el JSON. Asegúrate de copiar el archivo completo.', '❌'); }
 }
-
 // ══════════════════════════════════════════
 //  TOAST
 // ══════════════════════════════════════════
@@ -2569,13 +2577,11 @@ function toast(msg, icon='ℹ️', duration=3000) {
   t.className=`toast`; t.innerHTML=`<span>${icon}</span><span>${msg}</span>`; c.appendChild(t);
   setTimeout(()=>{ t.style.animation='toastOut 0.3s forwards'; setTimeout(()=>t.remove(),300); }, duration);
 }
-
 // ══════════════════════════════════════════
 //  UTILS
 // ══════════════════════════════════════════
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-
 // Cerrar modales clickando overlay o pulsando Escape
 document.querySelectorAll('.overlay').forEach(o => {
   o.addEventListener('click', e => { if (e.target === o) closeModal(o.id); });
@@ -2593,7 +2599,6 @@ document.addEventListener('keydown', e => {
     else if (id === 'modal-edit-col') { e.preventDefault(); guardarEditCol(); }
   }
 });
-
 // ══════════════════════════════════════════
 //  🖼️ VER FOTO AMPLIADA
 // ══════════════════════════════════════════
@@ -2844,7 +2849,6 @@ function initPWA() {
     document.getElementById('pwa-manifest').href = URL.createObjectURL(blob);
   } catch(e) {}
 
-  // ── Service Worker: inyectado como data: URL (evita restricción blob en SW) ──
   if ('serviceWorker' in navigator) {
     const SW_VERSION = Date.now();
     const swCode = `
@@ -2870,12 +2874,10 @@ self.addEventListener('fetch',e=>{
   );
 });`;
     try {
-      // Usamos un data URL base64 para registrar el SW (funciona en Chrome 91+)
       const b64 = btoa(unescape(encodeURIComponent(swCode)));
       const dataUrl = 'data:application/javascript;base64,' + b64;
       navigator.serviceWorker.register(dataUrl, {scope: '/'})
         .catch(() => {
-          // fallback: blob URL (funciona en Firefox y algunos Chrome)
           try {
             const blob = new Blob([swCode], {type:'application/javascript'});
             navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(()=>{});
@@ -2884,7 +2886,6 @@ self.addEventListener('fetch',e=>{
     } catch(e) {}
   }
 
-  // ── Banner instalación ──
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
     _deferredPrompt = e;
