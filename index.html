@@ -2480,6 +2480,9 @@ async function abrirIntercambio(colId) {
   };
 
   // Helper: generar un QR en un contenedor dado
+  // maxUrl: límite de caracteres que acepta un QR con nivel L (~4296 alfanumérico / ~2953 bytes binario)
+  // Usamos 2900 como margen seguro para URLs base64url
+  const QR_MAX = 2900;
   const _makeQRBlock = (label, url) => {
     const block = document.createElement('div');
     block.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:220px;';
@@ -2491,10 +2494,15 @@ async function abrirIntercambio(colId) {
     }
     const qrWrap = document.createElement('div');
     qrWrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;';
-    try {
-      new QRCode(qrWrap, { text: url, width: 200, height: 200, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.M });
-    } catch(e) {
-      qrWrap.innerHTML = `<p style="color:red;font-size:11px;padding:8px">Error QR</p>`;
+    if (url.length > QR_MAX) {
+      qrWrap.innerHTML = `<p style="color:#c00;font-size:11px;padding:8px;text-align:center;max-width:200px">⚠️ Lista demasiado grande para un QR.<br>Usa el enlace para compartir.</p>`;
+    } else {
+      try {
+        // Nivel L: máxima capacidad (menor corrección de errores, suficiente para URLs en pantalla)
+        new QRCode(qrWrap, { text: url, width: 220, height: 220, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
+      } catch(e) {
+        qrWrap.innerHTML = `<p style="color:red;font-size:11px;padding:8px">Error QR</p>`;
+      }
     }
     block.appendChild(qrWrap);
     // Link copiable bajo el QR
@@ -2507,6 +2515,15 @@ async function abrirIntercambio(colId) {
     return block;
   };
 
+  // Versión compacta de los datos: solo el número si nombre/equipo/tipo están vacíos
+  const compact = arr => arr.map(c => {
+    const o = { num: c.num };
+    if (c.nom) o.nom = c.nom;
+    if (c.eq)  o.eq  = c.eq;
+    if (c.tip) o.tip = c.tip;
+    return o;
+  });
+
   const qrContainer   = document.getElementById('qr-container');
   const linksWrap     = document.getElementById('share-links-wrap');
   qrContainer.innerHTML = '';
@@ -2514,23 +2531,30 @@ async function abrirIntercambio(colId) {
 
   openModal('modal-intercambio');
 
-  // Generar el link combinado siempre
-  const linkTodo = await mkLink({ n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() });
+  // Intentar siempre un único QR con datos compactos
+  const linkTodo = await mkLink({ n: col.name, e: col.emoji, r: compact(repes), f: compact(faltas), ts: Date.now() });
 
-  if (linkTodo.length <= 2800) {
-    // Un solo QR
+  if (linkTodo.length <= QR_MAX) {
+    // ✅ Un solo QR — cabe todo
     qrContainer.style.cssText = 'display:flex;justify-content:center;';
     qrContainer.appendChild(_makeQRBlock(null, linkTodo));
   } else {
-    // Dos QRs separados — repes y faltas
-    toast('Lista grande — generando 2 QRs separados', 'ℹ️', 3000);
-    qrContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:16px;justify-content:center;background:none;padding:0;';
+    // Lista grande: intentar dos QRs separados (repes + faltas por separado)
+    const linkRepes  = await mkLink({ n: col.name + ' · Repetidos', e: col.emoji, r: compact(repes), f: [],             ts: Date.now() });
+    const linkFaltas = await mkLink({ n: col.name + ' · Faltas',     e: col.emoji, r: [],             f: compact(faltas), ts: Date.now() });
 
-    const linkRepes  = await mkLink({ n: col.name + ' · Repetidos', e: col.emoji, r: repes,  f: [],    ts: Date.now() });
-    const linkFaltas = await mkLink({ n: col.name + ' · Faltas',     e: col.emoji, r: [],     f: faltas, ts: Date.now() });
-
-    qrContainer.appendChild(_makeQRBlock('🔁 Repetidos', linkRepes));
-    qrContainer.appendChild(_makeQRBlock('❓ Faltas',    linkFaltas));
+    if (linkRepes.length <= QR_MAX && linkFaltas.length <= QR_MAX) {
+      toast('Lista grande — se generan 2 QRs: uno para repetidos y otro para faltas', 'ℹ️', 4000);
+      qrContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:16px;justify-content:center;background:none;padding:0;';
+      qrContainer.appendChild(_makeQRBlock('🔁 Repetidos', linkRepes));
+      qrContainer.appendChild(_makeQRBlock('❓ Faltas',    linkFaltas));
+    } else {
+      // Colección enorme: mostrar ambos enlaces aunque no quepan en QR
+      toast('Colección muy grande — usa los enlaces para compartir', 'ℹ️', 5000);
+      qrContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:16px;justify-content:center;background:none;padding:0;';
+      qrContainer.appendChild(_makeQRBlock('🔁 Repetidos', linkRepes));
+      qrContainer.appendChild(_makeQRBlock('❓ Faltas',    linkFaltas));
+    }
   }
 
   const waText = _buildWAText(STATE.fichaColId);
