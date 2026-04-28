@@ -254,6 +254,7 @@ async function init() {
   const params = new URLSearchParams(location.search);
   const compressed = params.get('z');
   const rawData    = params.get('data');
+  const minimal    = params.get('q');  // formato QR: "Nombre|emoji|r:1,2,3|f:4,5,6"
 
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
@@ -264,6 +265,19 @@ async function init() {
   if (rawData) {
     try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
     catch { showError(); }
+    return;
+  }
+
+  if (minimal) {
+    try {
+      const parts = decodeURIComponent(minimal).split('|');
+      const name  = parts[0] || 'Colección';
+      const emoji = parts[1] || '🃏';
+      const rPart = (parts.find(p => p.startsWith('r:')) || 'r:').slice(2);
+      const fPart = (parts.find(p => p.startsWith('f:')) || 'f:').slice(2);
+      const toList = str => str ? str.split(',').filter(Boolean).map(n => ({ num: n, nom: '', eq: '', tip: '' })) : [];
+      renderPage({ n: name, e: emoji, r: toList(rPart), f: toList(fPart), ts: Date.now() });
+    } catch { showError(); }
     return;
   }
 
