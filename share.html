@@ -266,22 +266,35 @@ async function _decompressFromB64(b64url) {
 
 async function init() {
   const params = new URLSearchParams(location.search);
+  const shareId   = params.get('id');
   const compressed = params.get('z');
-  const rawData = params.get('data');
+  const rawData   = params.get('data');
 
+  // ── Modo localStorage: ?id=nc_share_xxxxx ──
+  // Los datos están guardados en el localStorage del mismo origen (mismo dispositivo/navegador)
+  if (shareId) {
+    try {
+      const raw = localStorage.getItem(shareId);
+      if (!raw) { showError(); return; }
+      renderPage(JSON.parse(raw));
+    } catch(e) { console.error('localStorage error:', e); showError(); }
+    return;
+  }
+
+  // ── Modo URL comprimida: ?z=... ──
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
     catch(e) { console.error('Decompress error:', e); showError(); }
     return;
   }
 
+  // ── Modo URL raw: ?data=... ──
   if (rawData) {
     try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
     catch { showError(); }
     return;
   }
 
-  // Enlace antiguo con ?id= (Firebase) — ya no soportado
   showError();
 }
 
