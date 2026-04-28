@@ -21,6 +21,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
+
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
@@ -28,8 +29,11 @@ const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 
 let _driveTokenClient;
 let _driveAccessToken = null;
+
 const _driveIds = {};
+
 window._dirtyPhotos = new Set();
+
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -115,6 +119,7 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
+  // 2. Fotos: subir en cola con máximo 3 en paralelo para no saturar
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -127,16 +132,13 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
         .catch(e => console.error(`Drive — error fotos ${col.id}:`, e))
     );
   }
-  // Ejecutar en grupos de 3
   for (let i = 0; i < photoJobs.length; i += 3) {
     await Promise.all(photoJobs.slice(i, i + 3).map(fn => fn()));
   }
 };
 
-// ── Marcar colección como con fotos modificadas ──
 window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
-// ── Estado visual del indicador ──
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
@@ -1090,7 +1092,6 @@ function setSyncStatus(status) {
   const wrap = document.getElementById('storage-info');
   if (!dot || !label || !wrap) return;
 
-  // Quitar todas las clases de estado
   wrap.classList.remove('syncing', 'sync-ok', 'sync-error', 'sync-pending');
   clearTimeout(_syncOkTimer);
 
@@ -1106,7 +1107,6 @@ function setSyncStatus(status) {
   label.textContent = s.text;
   if (s.cls) wrap.classList.add(s.cls);
 
-  // Tras 3s en "ok", volver al estilo neutro con texto corto
   if (status === 'ok') {
     _syncOkTimer = setTimeout(() => {
       wrap.classList.remove('sync-ok');
@@ -1145,24 +1145,18 @@ let _retryCount   = 0;
 const MAX_RETRIES   = 5;
 const RETRY_DELAYS  = [4000, 12000, 30000, 60000, 120000];
 
-// ── SAVE ──
-// Guarda en IndexedDB inmediatamente.
-// Sube a Drive con debounce (meta siempre, fotos solo si window._dirtyPhotos tiene entradas).
 function save(dirtyColId) {
   _localVersion++;
   clearTimeout(_saveTimer);
 
-  // Marcar colección con fotos modificadas si se indica
   if (dirtyColId) window.driveMarkPhotosDirty?.(dirtyColId);
 
-  // Guardar en IndexedDB al momento (fuente de verdad local, con fotos originales)
   dbSet('nc_local_' + MY_UID, {
     colecciones: STATE.colecciones,
     version: _localVersion,
     savedAt: Date.now()
   }).catch(() => {});
 
-  // Drive con debounce 1.5s
   _saveTimer = setTimeout(() => _doDriveUpload(), 1500);
 }
 
@@ -1221,9 +1215,7 @@ async function _syncWithDriveInBackground() {
       } else { setSyncStatus('ok'); }
       return;
     }
-
-    // Migración: si el remote viene del formato antiguo (un solo archivo con fotos)
-    // las fotos ya están dentro de remote.colecciones, las aceptamos tal cual.
+    
     const localTs  = _localSavedAt || 0;
     const remoteTs = remote.savedAt || 0;
 
@@ -2443,11 +2435,28 @@ async function abrirIntercambio(colId) {
 
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
 
-  // Helper: comprimir datos → URL
-  const mkLink = async (data) => {
-    try { return base + '?z=' + (await _compressToB64(data)); }
-    catch { return base + '?data=' + encodeURIComponent(JSON.stringify(data)); }
-  };
+  // ── Guardar datos en localStorage con un ID corto ──
+  // La URL resultante es siempre corta: share.html?id=xxxxxxxx (~50 chars)
+  // share.html los leerá del localStorage del mismo origen.
+  const shareId = 'nc_share_' + Date.now().toString(36);
+  const payload = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
+  try {
+    // Limpiar shares antiguos (más de 7 días) para no llenar el storage
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('nc_share_')) {
+        try {
+          const d = JSON.parse(localStorage.getItem(k));
+          if (!d?.ts || Date.now() - d.ts > 7 * 24 * 3600 * 1000) localStorage.removeItem(k);
+        } catch { localStorage.removeItem(k); }
+      }
+    }
+    localStorage.setItem(shareId, JSON.stringify(payload));
+  } catch(e) {
+    toast('Error al guardar datos de intercambio', '❌'); return;
+  }
+
+  const url = base + '?id=' + shareId;
 
   const qrContainer = document.getElementById('qr-container');
   const linksWrap   = document.getElementById('share-links-wrap');
@@ -2455,9 +2464,6 @@ async function abrirIntercambio(colId) {
   if (linksWrap) linksWrap.innerHTML = '';
 
   openModal('modal-intercambio');
-
-  // Generar siempre un único QR con todo (igual que el comportamiento original)
-  const url = await mkLink({ n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() });
 
   qrContainer.style.cssText = 'display:flex;justify-content:center;';
 
@@ -2467,11 +2473,18 @@ async function abrirIntercambio(colId) {
   const qrWrap = document.createElement('div');
   qrWrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;';
   try {
+    // URL corta → QR pequeño, fácil de leer con cualquier móvil
     new QRCode(qrWrap, { text: url, width: 220, height: 220, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.M });
   } catch(e) {
     qrWrap.innerHTML = `<p style="color:red;font-size:11px;padding:8px">Error al generar QR</p>`;
   }
   block.appendChild(qrWrap);
+
+  // Aviso: el QR/link solo funciona en el mismo dispositivo/navegador
+  const nota = document.createElement('p');
+  nota.style.cssText = 'font-size:11px;color:var(--text3);text-align:center;max-width:220px;line-height:1.5;';
+  nota.textContent = '⚠️ Este enlace solo funciona en este dispositivo. Para compartir con otros, usa el botón "Copiar enlace largo".';
+  block.appendChild(nota);
 
   const safeUrl = url.replace(/'/g, "\\'");
   const linkRow = document.createElement('div');
@@ -2480,6 +2493,22 @@ async function abrirIntercambio(colId) {
     <input class="form-input" style="font-size:10px;font-family:'JetBrains Mono',monospace;flex:1;min-width:0;" readonly value="${url}">
     <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${safeUrl}').then(()=>toast('Enlace copiado ✅')).catch(()=>toast('No se pudo copiar','⚠️'))">Copiar</button>`;
   block.appendChild(linkRow);
+
+  // Botón para copiar el enlace largo (con datos comprimidos) — para compartir con otros
+  const btnLargo = document.createElement('button');
+  btnLargo.className = 'btn btn-secondary btn-sm';
+  btnLargo.style.cssText = 'width:100%;max-width:240px;';
+  btnLargo.textContent = '🔗 Copiar enlace largo (para compartir)';
+  btnLargo.onclick = async () => {
+    try {
+      const z = await _compressToB64(payload);
+      const urlLarga = base + '?z=' + z;
+      await navigator.clipboard.writeText(urlLarga);
+      toast('Enlace largo copiado — pégalo en WhatsApp o email ✅');
+    } catch { toast('No se pudo copiar', '⚠️'); }
+  };
+  block.appendChild(btnLargo);
+
   qrContainer.appendChild(block);
 
   const waText = _buildWAText(STATE.fichaColId);
