@@ -229,6 +229,10 @@ function renderPage(data) {
 }
 
 async function _decompressFromB64(b64url) {
+  return JSON.parse(await _decompressString(b64url));
+}
+
+async function _decompressString(b64url) {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
@@ -247,7 +251,7 @@ async function _decompressFromB64(b64url) {
   let offset = 0;
   const full = new Uint8Array(chunks.reduce((a,c) => a+c.length, 0));
   for (const c of chunks) { full.set(c, offset); offset += c.length; }
-  return JSON.parse(new TextDecoder().decode(full));
+  return new TextDecoder().decode(full);
 }
 
 async function init() {
@@ -270,7 +274,12 @@ async function init() {
 
   if (minimal) {
     try {
-      const parts = decodeURIComponent(minimal).split('|');
+      // Intentar descomprimir primero (formato nuevo comprimido)
+      let raw;
+      try { raw = await _decompressString(minimal); }
+      catch { raw = decodeURIComponent(minimal); }
+
+      const parts = raw.split('§');
       const name  = parts[0] || 'Colección';
       const emoji = parts[1] || '🃏';
       const rPart = (parts.find(p => p.startsWith('r:')) || 'r:').slice(2);
