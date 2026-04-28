@@ -21,19 +21,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-// ══════════════════════════════════════════
-//  ☁️ GOOGLE DRIVE — Sincronización split
-//
-//  Arquitectura de archivos en Drive:
-//    nc_meta.json          → colecciones + cromos SIN fotos (~50 KB)
-//    nc_photos_<colId>.json → fotos (base64) de esa colección
-//
-//  Flujo:
-//    - Arranque: app carga desde IndexedDB local inmediatamente.
-//      Drive se conecta en segundo plano (no bloquea).
-//    - save():  guarda meta siempre; fotos solo si cambiaron.
-//    - Carga remota: descarga meta, luego fotos de cada col en paralelo.
-// ══════════════════════════════════════════
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
@@ -41,15 +28,8 @@ const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 
 let _driveTokenClient;
 let _driveAccessToken = null;
-
-// Caché de fileIds en Drive  { filename → fileId }
 const _driveIds = {};
-
-// Conjunto de colIds cuyas fotos han cambiado desde el último guardado
-// Expuesto en window para documentar el contrato entre los dos bloques de script
 window._dirtyPhotos = new Set();
-
-// ── Bajo nivel: buscar o crear fileId por nombre ──
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -64,7 +44,6 @@ async function _driveFileId(name) {
   return null;
 }
 
-// ── Bajo nivel: subir/actualizar un JSON en Drive ──
 async function _driveUploadJSON(name, obj) {
   const existing = await _driveFileId(name);
   const meta = { name, mimeType: 'application/json' };
@@ -85,7 +64,6 @@ async function _driveUploadJSON(name, obj) {
   _driveIds[name] = d.id;  // guardar fileId para futuros PATCH
 }
 
-// ── Bajo nivel: descargar JSON de Drive por nombre ──
 async function _driveDownloadJSON(name) {
   const fid = await _driveFileId(name);
   if (!fid) return null;
@@ -97,9 +75,6 @@ async function _driveDownloadJSON(name) {
   return await r.json();
 }
 
-// ── API pública: obtener todos los datos desde Drive ──
-//    Devuelve { colecciones, version, savedAt } con fotos incluidas
-//    o null si Drive no tiene nada todavía.
 window.driveGetData = async () => {
   if (!_driveAccessToken) return null;
   try {
@@ -127,7 +102,6 @@ window.driveGetData = async () => {
   }
 };
 
-// ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   if (!_driveAccessToken) return;
 
@@ -141,7 +115,6 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
-  // 2. Fotos: subir en cola con máximo 3 en paralelo para no saturar
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -167,11 +140,8 @@ window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(co
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
-  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
 }
 
-// ── Inicializar OAuth y mostrar botón de conexión ──
-// Espera activamente a que el script de Google cargue (async defer puede tardar).
 window.initDrive = () => {
   const MAX_WAIT_MS = 10000;  // esperar hasta 10s a que cargue GSI
   const START = Date.now();
