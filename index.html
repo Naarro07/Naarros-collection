@@ -28,13 +28,10 @@ const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 let _driveTokenClient;
 let _driveAccessToken = null;
 
-// Caché de fileIds en Drive  { filename → fileId }
 const _driveIds = {};
 
-// Conjunto de colIds cuyas fotos han cambiado desde el último guardado
 window._dirtyPhotos = new Set();
 
-// ── Bajo nivel: buscar o crear fileId por nombre ──
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -49,7 +46,6 @@ async function _driveFileId(name) {
   return null;
 }
 
-// ── Bajo nivel: subir/actualizar un JSON en Drive ──
 async function _driveUploadJSON(name, obj) {
   const existing = await _driveFileId(name);
   const meta = { name, mimeType: 'application/json' };
@@ -82,9 +78,6 @@ async function _driveDownloadJSON(name) {
   return await r.json();
 }
 
-// ── API pública: obtener todos los datos desde Drive ──
-//    Devuelve { colecciones, version, savedAt } con fotos incluidas
-//    o null si Drive no tiene nada todavía.
 window.driveGetData = async () => {
   if (!_driveAccessToken) return null;
   try {
@@ -112,11 +105,9 @@ window.driveGetData = async () => {
   }
 };
 
-// ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   if (!_driveAccessToken) return;
 
-  // 1. Construir payload de meta SIN fotos
   const metaCols = colecciones.map(col => ({
     ...col,
     cromos: col.cromos.map(c => {
@@ -126,7 +117,6 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
-  // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -144,18 +134,13 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }
 };
 
-// ── Marcar colección como con fotos modificadas ──
 window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
-// ── Estado visual del indicador ──
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
-  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
 }
 
-// ── Inicializar OAuth y mostrar botón de conexión ──
-// Espera activamente a que el script de Google cargue (async defer puede tardar).
 window.initDrive = () => {
   const MAX_WAIT_MS = 10000;  // esperar hasta 10s a que cargue GSI
   const START = Date.now();
