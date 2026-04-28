@@ -169,16 +169,21 @@ function renderLista(lista, accentColor, iconGrupo) {
 }
 
 function renderPage(data) {
-  const repes = normalizar(data.r);
+  const repes  = normalizar(data.r);
   const faltas = normalizar(data.f);
-  const fecha = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
+  const fecha  = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
 
-  document.title = `${data.n} · Lista de intercambio`;
+  // Detectar si es un QR dividido (solo repetidos o solo faltas)
+  const soloRepes  = repes.length > 0 && faltas.length === 0;
+  const soloFaltas = faltas.length > 0 && repes.length === 0;
+  const subTitle   = soloRepes ? '🔁 Solo repetidos disponibles' : soloFaltas ? '❓ Solo faltas buscadas' : 'Lista de intercambio';
+
+  document.title = `${data.n} · ${subTitle}`;
   document.getElementById('page').innerHTML = `
     <div class="hdr">
       <div class="hdr-emoji">${esc(data.e||'🃏')}</div>
       <div class="hdr-title">${esc(data.n)}</div>
-      <div class="hdr-sub">Lista de intercambio</div>
+      <div class="hdr-sub">${subTitle}</div>
       ${fecha ? `<div class="hdr-date">${fecha}</div>` : ''}
       <div class="hdr-counters">
         <div class="hdr-cnt">
