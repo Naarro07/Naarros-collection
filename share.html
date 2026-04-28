@@ -95,7 +95,7 @@ body{font-family:'Outfit',sans-serif;background:#0d0f14;color:#e8eaf0;min-height
 <div id="error">
   <div class="ei">😕</div>
   <h2>Lista no encontrada</h2>
-  <p>Este enlace ha expirado o es incorrecto. Pide al dueño de la colección que genere un nuevo enlace.</p>
+  <p>Este enlace ha expirado o es incorrecto. Pide al dueño que genere un nuevo enlace desde la app.</p>
 </div>
 
 <div class="page" id="page" style="display:none"></div>
@@ -169,21 +169,16 @@ function renderLista(lista, accentColor, iconGrupo) {
 }
 
 function renderPage(data) {
-  const repes  = normalizar(data.r);
+  const repes = normalizar(data.r);
   const faltas = normalizar(data.f);
-  const fecha  = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
+  const fecha = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
 
-  // Detectar si es un QR dividido (solo repetidos o solo faltas)
-  const soloRepes  = repes.length > 0 && faltas.length === 0;
-  const soloFaltas = faltas.length > 0 && repes.length === 0;
-  const subTitle   = soloRepes ? '🔁 Solo repetidos disponibles' : soloFaltas ? '❓ Solo faltas buscadas' : 'Lista de intercambio';
-
-  document.title = `${data.n} · ${subTitle}`;
+  document.title = `${data.n} · Lista de intercambio`;
   document.getElementById('page').innerHTML = `
     <div class="hdr">
       <div class="hdr-emoji">${esc(data.e||'🃏')}</div>
       <div class="hdr-title">${esc(data.n)}</div>
-      <div class="hdr-sub">${subTitle}</div>
+      <div class="hdr-sub">Lista de intercambio</div>
       ${fecha ? `<div class="hdr-date">${fecha}</div>` : ''}
       <div class="hdr-counters">
         <div class="hdr-cnt">
@@ -201,7 +196,8 @@ function renderPage(data) {
       </div>
     </div>
 
-    ${!soloFaltas ? `<div class="section">
+    <!-- REPETIDOS -->
+    <div class="section">
       <div class="section-hdr">
         <div class="section-dot" style="background:#fbbf24"></div>
         <div class="section-title" style="color:#fbbf24">🔁 Repetidos — disponibles</div>
@@ -210,9 +206,10 @@ function renderPage(data) {
       <div class="cards-wrap">
         ${renderLista(repes, '#fbbf24', '🏟')}
       </div>
-    </div>` : ''}
+    </div>
 
-    ${!soloRepes ? `<div class="section" style="padding-top:16px">
+    <!-- FALTAS -->
+    <div class="section" style="padding-top:16px">
       <div class="section-hdr">
         <div class="section-dot" style="background:#ff4f6a"></div>
         <div class="section-title" style="color:#ff4f6a">❓ Faltas — busco estos</div>
@@ -221,7 +218,7 @@ function renderPage(data) {
       <div class="cards-wrap">
         ${renderLista(faltas, '#4f8cff', '🏟')}
       </div>
-    </div>` : ''}
+    </div>
 
     <div class="footer">
       Generado con <a href="https://naarro07.github.io/Naarros-collection/" target="_blank">CollectionDB</a> 🃏
@@ -231,7 +228,6 @@ function renderPage(data) {
   hideSplash();
 }
 
-// ── Descomprimir base64url → objeto JSON ──
 async function _decompressFromB64(b64url) {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(b64);
@@ -257,7 +253,7 @@ async function _decompressFromB64(b64url) {
 async function init() {
   const params = new URLSearchParams(location.search);
   const compressed = params.get('z');
-  const rawData = params.get('data');
+  const rawData    = params.get('data');
 
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
@@ -271,7 +267,7 @@ async function init() {
     return;
   }
 
-  // Enlace antiguo con ?id= (Firebase) — ya no soportado
+  // ?id= de Firebase ya no está soportado
   showError();
 }
 
