@@ -17,7 +17,6 @@
 <link rel="manifest" id="pwa-manifest">
 <title>CollectionsDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
@@ -29,10 +28,13 @@ const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
 let _driveTokenClient;
 let _driveAccessToken = null;
 
+// Caché de fileIds en Drive  { filename → fileId }
 const _driveIds = {};
 
+// Conjunto de colIds cuyas fotos han cambiado desde el último guardado
 window._dirtyPhotos = new Set();
 
+// ── Bajo nivel: buscar o crear fileId por nombre ──
 async function _driveFileId(name) {
   if (_driveIds[name]) return _driveIds[name];
   const r = await fetch(
@@ -47,6 +49,7 @@ async function _driveFileId(name) {
   return null;
 }
 
+// ── Bajo nivel: subir/actualizar un JSON en Drive ──
 async function _driveUploadJSON(name, obj) {
   const existing = await _driveFileId(name);
   const meta = { name, mimeType: 'application/json' };
@@ -67,6 +70,7 @@ async function _driveUploadJSON(name, obj) {
   _driveIds[name] = d.id;  // guardar fileId para futuros PATCH
 }
 
+// ── Bajo nivel: descargar JSON de Drive por nombre ──
 async function _driveDownloadJSON(name) {
   const fid = await _driveFileId(name);
   if (!fid) return null;
@@ -78,16 +82,21 @@ async function _driveDownloadJSON(name) {
   return await r.json();
 }
 
+// ── API pública: obtener todos los datos desde Drive ──
+//    Devuelve { colecciones, version, savedAt } con fotos incluidas
+//    o null si Drive no tiene nada todavía.
 window.driveGetData = async () => {
   if (!_driveAccessToken) return null;
   try {
     const meta = await _driveDownloadJSON(DRIVE_META_NAME);
     if (!meta || !Array.isArray(meta.colecciones)) return null;
 
+    // Descargar fotos de todas las colecciones en paralelo
     const fotosPromises = meta.colecciones.map(async col => {
       try {
         const photos = await _driveDownloadJSON(DRIVE_PHOTO_PFX + col.id + '.json');
         if (!photos) return;
+        // Inyectar fotos en los cromos correspondientes
         const map = {};
         for (const p of (photos.photos || [])) map[p.id] = p;
         for (const c of col.cromos) {
@@ -103,9 +112,11 @@ window.driveGetData = async () => {
   }
 };
 
+// ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   if (!_driveAccessToken) return;
 
+  // 1. Construir payload de meta SIN fotos
   const metaCols = colecciones.map(col => ({
     ...col,
     cromos: col.cromos.map(c => {
@@ -115,6 +126,7 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
+  // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
   const photoJobs = [];
   for (const col of colecciones) {
@@ -132,13 +144,18 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }
 };
 
+// ── Marcar colección como con fotos modificadas ──
 window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
 // ── Estado visual del indicador ──
 window._driveConnected = false;
 function _driveUpdateStatus(ok) {
   window._driveConnected = ok;
+  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
 }
+
+// ── Inicializar OAuth y mostrar botón de conexión ──
+// Espera activamente a que el script de Google cargue (async defer puede tardar).
 window.initDrive = () => {
   const MAX_WAIT_MS = 10000;  // esperar hasta 10s a que cargue GSI
   const START = Date.now();
@@ -2429,37 +2446,31 @@ async function abrirIntercambio(colId) {
     .filter(c => c.tengo === false)
     .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
 
-  const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
 
-  let link;
+  // ── Enlace completo (para copiar/compartir): incluye nombres, equipos, tipos
+  const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
+  let linkCompleto;
   try {
-    const compressed = await _compressToB64(shareData);
-    link = base + '?z=' + compressed;
+    linkCompleto = base + '?z=' + (await _compressToB64(shareData));
   } catch {
-    link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
+    linkCompleto = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
   }
+  document.getElementById('share-link-input').value = linkCompleto;
 
-  document.getElementById('share-link-input').value = link;
+  // ── URL mínima para QR: solo números separados por coma, sin nombres
+  // Formato: share.html?q=NOMBRE|EMOJI|r:1,2,3|f:4,5,6
+  // ~10x más corta que el enlace completo → siempre cabe en un QR legible
+  const rNums = repes.map(c => c.num).join(',');
+  const fNums = faltas.map(c => c.num).join(',');
+  const qPayload = `${col.name}|${col.emoji}|r:${rNums}|f:${fNums}`;
+  const linkQR = base + '?q=' + encodeURIComponent(qPayload);
 
-  // QR generado localmente con QRCode.js — sin servidores externos
   const qrContainer = document.getElementById('qr-container');
-  qrContainer.innerHTML = '';
-  try {
-    new QRCode(qrContainer, {
-      text: link,
-      width: 240,
-      height: 240,
-      colorDark: '#000000',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M
-    });
-    // Centrar el canvas/img que genera la librería
-    qrContainer.style.cssText = 'display:flex;justify-content:center;padding:12px;background:#fff;border-radius:10px;';
-  } catch(e) {
-    console.warn('QR generation failed:', e);
-    qrContainer.innerHTML = `<p style="color:var(--text3);font-size:12px;text-align:center;padding:16px">⚠️ No se pudo generar el QR — copia el enlace</p>`;
-  }
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&ecc=M&margin=2&data=${encodeURIComponent(linkQR)}`;
+  qrContainer.innerHTML = `<img src="${qrUrl}" width="220" height="220"
+    style="border-radius:8px;display:block;margin:0 auto;background:#fff;padding:8px;"
+    onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>⚠️ QR no disponible — copia el enlace</p>'">`;
 
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
