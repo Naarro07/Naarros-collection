@@ -1024,11 +1024,8 @@ select.form-input { cursor: pointer; }
     <div class="intercambio-section">
       <h4>📤 Compartir mi lista</h4>
       <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Genera un QR o enlace con tu lista de repetidos y faltas.</p>
-      <div id="qr-container" class="qr-wrap"></div>
-      <div class="share-link-row">
-        <input class="form-input" id="share-link-input" readonly>
-        <button class="btn btn-primary btn-sm" onclick="copiarEnlace()">Copiar</button>
-      </div>
+      <div id="qr-container" class="qr-wrap" style="flex-wrap:wrap;gap:16px;"></div>
+      <div id="share-links-wrap"></div>
     </div>
     <div class="intercambio-section" style="margin-top:12px;">
       <h4>💬 Texto para WhatsApp</h4>
@@ -2474,70 +2471,78 @@ async function abrirIntercambio(colId) {
     .filter(c => c.tengo === false)
     .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
 
-  const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
 
-  let link;
-  try {
-    const compressed = await _compressToB64(shareData);
-    link = base + '?z=' + compressed;
-  } catch {
-    link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
-  }
-
-  document.getElementById('share-link-input').value = link;
-
-  // QR generado localmente con QRCode.js — sin servidores externos
-  const qrContainer = document.getElementById('qr-container');
-  qrContainer.innerHTML = '';
-
-  // Estimar tamaño: si la URL comprimida es > 2800 chars, dividir en dos QRs
-  const _generateQR = (container, text, label) => {
-    try {
-      if (label) {
-        const lbl = document.createElement('p');
-        lbl.style.cssText = 'font-size:11px;font-weight:700;color:#555;text-align:center;margin-bottom:4px;';
-        lbl.textContent = label;
-        container.appendChild(lbl);
-      }
-      new QRCode(container, { text, width: 220, height: 220, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.M });
-    } catch(e) {
-      container.innerHTML += `<p style="color:red;font-size:11px;text-align:center">Error generando QR</p>`;
-    }
+  // Helper: comprimir datos → URL
+  const mkLink = async (data) => {
+    try { return base + '?z=' + (await _compressToB64(data)); }
+    catch { return base + '?data=' + encodeURIComponent(JSON.stringify(data)); }
   };
 
-  qrContainer.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;';
-
-  if (link.length <= 2800) {
-    // URL corta: un solo QR
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:flex;flex-direction:column;align-items:center;';
-    _generateQR(wrap, link);
-    qrContainer.appendChild(wrap);
-  } else {
-    // URL larga: generar QR de repetidos y QR de faltas por separado
-    toast('Lista grande — generando 2 QRs separados', 'ℹ️', 3000);
-    const mkLink = async (data) => {
-      try { return base + '?z=' + (await _compressToB64(data)); }
-      catch { return base + '?data=' + encodeURIComponent(JSON.stringify(data)); }
-    };
-    const linkRepes = await mkLink({ n: col.name + ' · Repetidos', e: col.emoji, r: repes, f: [], ts: Date.now() });
-    const linkFaltas = await mkLink({ n: col.name + ' · Faltas', e: col.emoji, r: [], f: faltas, ts: Date.now() });
-    for (const [lbl, lnk] of [['🔁 Repetidos', linkRepes], ['❓ Faltas', linkFaltas]]) {
-      const wrap = document.createElement('div');
-      wrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:flex;flex-direction:column;align-items:center;';
-      _generateQR(wrap, lnk, lbl);
-      qrContainer.appendChild(wrap);
+  // Helper: generar un QR en un contenedor dado
+  const _makeQRBlock = (label, url) => {
+    const block = document.createElement('div');
+    block.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:220px;';
+    if (label) {
+      const lbl = document.createElement('p');
+      lbl.style.cssText = 'font-size:12px;font-weight:700;color:var(--text2);text-align:center;';
+      lbl.textContent = label;
+      block.appendChild(lbl);
     }
+    const qrWrap = document.createElement('div');
+    qrWrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;';
+    try {
+      new QRCode(qrWrap, { text: url, width: 200, height: 200, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.M });
+    } catch(e) {
+      qrWrap.innerHTML = `<p style="color:red;font-size:11px;padding:8px">Error QR</p>`;
+    }
+    block.appendChild(qrWrap);
+    // Link copiable bajo el QR
+    const linkRow = document.createElement('div');
+    linkRow.style.cssText = 'display:flex;gap:6px;align-items:center;width:100%;max-width:240px;';
+    linkRow.innerHTML = `
+      <input class="form-input" style="font-size:10px;font-family:'JetBrains Mono',monospace;flex:1;" readonly value="${url}">
+      <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${url.replace(/'/g,"\\'")}').then(()=>toast('Enlace copiado ✅')).catch(()=>toast('No se pudo copiar','⚠️'))">Copiar</button>`;
+    block.appendChild(linkRow);
+    return block;
+  };
+
+  const qrContainer   = document.getElementById('qr-container');
+  const linksWrap     = document.getElementById('share-links-wrap');
+  qrContainer.innerHTML = '';
+  if (linksWrap) linksWrap.innerHTML = '';
+
+  openModal('modal-intercambio');
+
+  // Generar el link combinado siempre
+  const linkTodo = await mkLink({ n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() });
+
+  if (linkTodo.length <= 2800) {
+    // Un solo QR
+    qrContainer.style.cssText = 'display:flex;justify-content:center;';
+    qrContainer.appendChild(_makeQRBlock(null, linkTodo));
+  } else {
+    // Dos QRs separados — repes y faltas
+    toast('Lista grande — generando 2 QRs separados', 'ℹ️', 3000);
+    qrContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:16px;justify-content:center;background:none;padding:0;';
+
+    const linkRepes  = await mkLink({ n: col.name + ' · Repetidos', e: col.emoji, r: repes,  f: [],    ts: Date.now() });
+    const linkFaltas = await mkLink({ n: col.name + ' · Faltas',     e: col.emoji, r: [],     f: faltas, ts: Date.now() });
+
+    qrContainer.appendChild(_makeQRBlock('🔁 Repetidos', linkRepes));
+    qrContainer.appendChild(_makeQRBlock('❓ Faltas',    linkFaltas));
   }
 
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
   if (el) el.textContent = waText;
-  openModal('modal-intercambio');
 }
+
 function copiarEnlace() {
-  const v = document.getElementById('share-link-input').value;
+  // Busca el primer input de enlace visible en el modal
+  const input = document.querySelector('#qr-container input[readonly]');
+  const v = input?.value;
+  if (!v) { toast('No hay enlace disponible', '⚠️'); return; }
   navigator.clipboard.writeText(v).then(() => toast('Enlace copiado ✅')).catch(() => toast('No se pudo copiar','⚠️'));
 }
 function copiarWAIntercambio() {
