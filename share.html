@@ -176,7 +176,9 @@ function renderPage(data) {
   // Detectar si es un QR dividido (solo repetidos o solo faltas)
   const soloRepes  = repes.length > 0 && faltas.length === 0;
   const soloFaltas = faltas.length > 0 && repes.length === 0;
-  const subTitle   = soloRepes ? '🔁 Solo repetidos disponibles' : soloFaltas ? '❓ Solo faltas buscadas' : 'Lista de intercambio';
+  // Detectar si es una parte de una lista dividida (el label contiene "Parte X/Y")
+  const esParteDividida = soloRepes || soloFaltas;
+  const subTitle   = soloRepes ? '🔁 Repetidos disponibles' : soloFaltas ? '❓ Faltas buscadas' : 'Lista de intercambio';
 
   document.title = `${data.n} · ${subTitle}`;
   document.getElementById('page').innerHTML = `
@@ -186,22 +188,27 @@ function renderPage(data) {
       <div class="hdr-sub">${subTitle}</div>
       ${fecha ? `<div class="hdr-date">${fecha}</div>` : ''}
       <div class="hdr-counters">
-        <div class="hdr-cnt">
+        ${!soloFaltas ? `<div class="hdr-cnt">
           <div class="hdr-cnt-val" style="color:#fbbf24">${repes.length}</div>
           <div class="hdr-cnt-lbl">Repetidos</div>
-        </div>
-        <div class="hdr-cnt">
+        </div>` : ''}
+        ${!soloRepes ? `<div class="hdr-cnt">
           <div class="hdr-cnt-val" style="color:#ff4f6a">${faltas.length}</div>
           <div class="hdr-cnt-lbl">Faltas</div>
-        </div>
+        </div>` : ''}
         <div class="hdr-cnt">
           <div class="hdr-cnt-val" style="color:#4f8cff">${repes.length + faltas.length}</div>
-          <div class="hdr-cnt-lbl">Total</div>
+          <div class="hdr-cnt-lbl">En este QR</div>
         </div>
       </div>
     </div>
 
-    <!-- REPETIDOS -->
+    ${esParteDividida ? `<div style="margin:12px 20px 0;background:rgba(79,140,255,.1);border:1px solid rgba(79,140,255,.25);border-radius:10px;padding:10px 14px;font-size:12px;color:#8b92a8;text-align:center;">
+      📋 Esta es una parte de la lista. Puede haber más QRs con el resto de cromos.
+    </div>` : ''}
+
+    <!-- REPETIDOS: oculto si este QR es solo de faltas -->
+    ${(!soloFaltas) ? `
     <div class="section">
       <div class="section-hdr">
         <div class="section-dot" style="background:#fbbf24"></div>
@@ -211,9 +218,10 @@ function renderPage(data) {
       <div class="cards-wrap">
         ${renderLista(repes, '#fbbf24', '🏟')}
       </div>
-    </div>
+    </div>` : ''}
 
-    <!-- FALTAS -->
+    <!-- FALTAS: oculto si este QR es solo de repetidos -->
+    ${(!soloRepes) ? `
     <div class="section" style="padding-top:16px">
       <div class="section-hdr">
         <div class="section-dot" style="background:#ff4f6a"></div>
@@ -223,7 +231,7 @@ function renderPage(data) {
       <div class="cards-wrap">
         ${renderLista(faltas, '#4f8cff', '🏟')}
       </div>
-    </div>
+    </div>` : ''}
 
     <div class="footer">
       Generado con <a href="https://naarro07.github.io/Naarros-collection/" target="_blank">CollectionDB</a> 🃏
