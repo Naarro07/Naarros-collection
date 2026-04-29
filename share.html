@@ -262,20 +262,20 @@ async function init() {
 
   // ── ?id= → descargar JSON público de Google Drive ──
   if (fileId) {
-    try {
-      // Para archivos públicos Drive tiene este endpoint directo
-      const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      const data = await res.json();
-      if (!data.n) throw new Error('Datos inválidos');
-      renderPage(data);
-    } catch(e) {
-      console.error('Drive download error:', e);
-      showError();
-    }
-    return;
+  try {
+    // fileId aquí es el slug (share_TIMESTAMP_XXXX)
+    const rawUrl = `https://raw.githubusercontent.com/naarro07/Naarros-collection/main/shares/${fileId}.json`;
+    const res = await fetch(rawUrl);
+    if (!res.ok) throw new Error(`Error ${res.status}`);
+    const data = await res.json();
+    if (!data.n) throw new Error('Datos inválidos');
+    renderPage(data);
+  } catch(e) {
+    console.error('GitHub download error:', e);
+    showError();
   }
+  return;
+}
 
   // ── ?z= → URL comprimida (fallback) ──
   if (compressed) {
