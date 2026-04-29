@@ -2537,10 +2537,19 @@ async function abrirIntercambio(colId) {
     });
 
     const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
-    const z    = await _compressToB64(shareData);
-    const link = `${base}?z=${z}`;
+    // Si Drive está conectado → subir y usar ?id= (URL corta, funciona con 600+ cromos)
+    // Si no → fallback a compresión URL
+    let link;
+    if (_driveAccessToken) {
+      const filename = `share_${col.id}.json`;
+      const fileId = await _driveShareUpload(filename, shareData);
+      link = `${base}?id=${fileId}`;
+    } else {
+      const z = await _compressToB64(shareData);
+      link = `${base}?z=${z}`;
+    }
     linkInput.value = link;
-
+    
     qrContainer.innerHTML = '';
     const qrDiv = document.createElement('div');
     qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
