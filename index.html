@@ -17,7 +17,6 @@
 <link rel="manifest" id="pwa-manifest">
 <title>CollectionsDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
@@ -46,7 +45,7 @@ let _driveAccessToken = null;
 const _driveIds = {};
 
 // Conjunto de colIds cuyas fotos han cambiado desde el último guardado
-const _dirtyPhotos = new Set();
+window._dirtyPhotos = new Set();
 
 // ── Bajo nivel: buscar o crear fileId por nombre ──
 async function _driveFileId(name) {
@@ -140,24 +139,26 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
 
-  // 2. Para cada colección cuyas fotos hayan cambiado, subir su archivo de fotos
+  // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
-  const photoUploads = [];
+  const photoJobs = [];
   for (const col of colecciones) {
     if (!dirty.has(col.id)) continue;
     const photos = col.cromos
       .filter(c => c.fotoFront || c.fotoBack)
       .map(c => ({ id: c.id, front: c.fotoFront || null, back: c.fotoBack || null }));
-    photoUploads.push(
+    photoJobs.push(() =>
       _driveUploadJSON(DRIVE_PHOTO_PFX + col.id + '.json', { colId: col.id, photos })
         .catch(e => console.error(`Drive — error fotos ${col.id}:`, e))
     );
   }
-  if (photoUploads.length) await Promise.all(photoUploads);
+  for (let i = 0; i < photoJobs.length; i += 3) {
+    await Promise.all(photoJobs.slice(i, i + 3).map(fn => fn()));
+  }
 };
 
 // ── Marcar colección como con fotos modificadas ──
-window.driveMarkPhotosDirty = (colId) => { if (colId) _dirtyPhotos.add(colId); };
+window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(colId); };
 
 // ── Estado visual del indicador ──
 window._driveConnected = false;
@@ -191,6 +192,11 @@ window.initDrive = () => {
           if (resp.error) { console.warn('Drive OAuth error:', resp.error); return; }
           _driveAccessToken = resp.access_token;
           window._driveConnected = true;
+          // Renovar token cada 55 min (expira a los 60)
+          clearInterval(window._driveTokenTimer);
+          window._driveTokenTimer = setInterval(() => {
+            _driveTokenClient.requestAccessToken({ prompt: '' });
+          }, 55 * 60 * 1000);
           setSyncStatus('syncing');
           _syncWithDriveInBackground();
         },
@@ -590,6 +596,12 @@ select.form-input { cursor: pointer; }
 .intercambio-recibido { background: var(--surface2); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 14px; }
 .intercambio-recibido h4 { font-size: 14px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
 .intercambio-nums { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: var(--text2); word-break: break-all; }
+
+/* ─── DRAG & DROP COLECCIONES ─── */
+.drag-handle { font-size:20px;color:var(--text3);cursor:grab;padding:4px;line-height:1;user-select:none;-webkit-user-select:none; }
+.drag-handle:active { cursor:grabbing; }
+.col-card.drag-over { border-color:var(--accent) !important;background:var(--accent-glow);transform:scale(1.02); }
+.col-card.dragging { opacity:0.35;transform:scale(0.97); }
 
 /* ─── PWA INSTALL BANNER ─── */
 :root { --safe-bottom: env(safe-area-inset-bottom, 0px); }
@@ -1165,7 +1177,7 @@ const RETRY_DELAYS  = [4000, 12000, 30000, 60000, 120000];
 
 // ── SAVE ──
 // Guarda en IndexedDB inmediatamente.
-// Sube a Drive con debounce (meta siempre, fotos solo si _dirtyPhotos tiene entradas).
+// Sube a Drive con debounce (meta siempre, fotos solo si window._dirtyPhotos tiene entradas).
 function save(dirtyColId) {
   _localVersion++;
   clearTimeout(_saveTimer);
@@ -1193,8 +1205,8 @@ async function _doDriveUpload(isRetry = false) {
   try {
     const now = Date.now();
     // Capturar y limpiar el set de colIds sucios ANTES de la subida
-    const dirty = new Set(_dirtyPhotos);
-    _dirtyPhotos.clear();
+    const dirty = new Set(window._dirtyPhotos);
+    window._dirtyPhotos.clear();
 
     await window.driveSetData(STATE.colecciones, _localVersion, now, dirty);
 
@@ -1674,6 +1686,34 @@ function moveCol(id, delta) {
   save(); renderHome();
 }
 
+let _dragColId = null;
+function colDragStart(e, id) {
+  _dragColId = id;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function colDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+function colDrop(e, targetId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  if (!_dragColId || _dragColId === targetId) return;
+  const cols = STATE.colecciones;
+  const fromIdx = cols.findIndex(c => c.id === _dragColId);
+  const toIdx   = cols.findIndex(c => c.id === targetId);
+  if (fromIdx === -1 || toIdx === -1) return;
+  const [moved] = cols.splice(fromIdx, 1);
+  cols.splice(toIdx, 0, moved);
+  save(); renderHome();
+}
+function colDragEnd() {
+  _dragColId = null;
+  document.querySelectorAll('.col-card').forEach(el => el.classList.remove('dragging','drag-over'));
+}
+
 function renderHome() {
   const grid = document.getElementById('collections-grid'), sb = document.getElementById('sort-bar');
   const gs = document.getElementById('global-stats');
@@ -1714,14 +1754,18 @@ function renderHome() {
     const isComplete = s.total > 0 && s.falta === 0;
     const badgeClass = isComplete ? 'is-complete' : (s.reps > 0 ? 'has-rep' : '');
     const badgeText = isComplete ? '✅ Completa' : (s.reps > 0 ? s.reps + ' rep.' : 'Sin rep.');
-    return `<div class="col-card${isComplete?' complete-card':''}" onclick="openColeccion('${col.id}')">
+    return `<div class="col-card${isComplete?' complete-card':''}"
+        draggable="${isManual}"
+        data-col-id="${col.id}"
+        ondragstart="colDragStart(event,'${col.id}')"
+        ondragover="colDragOver(event)"
+        ondrop="colDrop(event,'${col.id}')"
+        ondragend="colDragEnd(event)"
+        onclick="openColeccion('${col.id}')">
       <div class="col-card-badge ${badgeClass}">${badgeText}</div>
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
-        <div class="col-card-emoji" style="margin-bottom: 0;">${col.emoji}</div>
-        ${isManual ? `<div style="display:flex; gap:4px; z-index:2" onclick="event.stopPropagation()">
-          <button class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 11px;" onclick="moveCol('${col.id}',-1)" ${si===0?'disabled':''}>▲</button>
-          <button class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 11px;" onclick="moveCol('${col.id}',1)" ${si===sorted.length-1?'disabled':''}>▼</button>
-        </div>` : ''}
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+        <div class="col-card-emoji" style="margin-bottom:0">${col.emoji}</div>
+        ${isManual ? `<div class="drag-handle" onclick="event.stopPropagation()" title="Arrastra para reordenar">⠿</div>` : ''}
       </div>
       <div class="col-card-title-row">
         <div class="col-card-name">${esc(col.name)}</div>
@@ -2004,13 +2048,36 @@ function processExcelFile(file) {
   r.readAsBinaryString(file);
 }
 function renderExcelPreview() {
-  const h=STATE.excelHeaders, rows=STATE.excelData.slice(0,5);
-  document.getElementById('preview-table').innerHTML=`<thead><tr>${h.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${h.map((_,i)=>`<td>${esc(String(r[i]??''))}</td>`).join('')}</tr>`).join('')}</tbody>`;
-  const fields=[{id:'map-num',label:'# Número',hint:'número'},{id:'map-nom',label:'Nombre',hint:'nombre'},{id:'map-tipo',label:'Tipo',hint:'tipo'},{id:'map-equipo',label:'Equipo',hint:'equipo'},{id:'map-rep',label:'Repetidos',hint:'repetidos'}];
-  const opts=['(ignorar)',...h].map((x,i)=>`<option value="${i-1}">${x}</option>`).join('');
-  document.getElementById('col-mapping').innerHTML=fields.map(f=>{
-    const ai=h.findIndex(x=>x.toLowerCase().includes(f.hint));
-    return `<div class="mapping-row"><div class="mapping-label"><b>${f.label}</b></div><select class="form-input" id="${f.id}" style="flex:1">${opts.replace(`value="${ai}"`,`value="${ai}" selected`)}</select></div>`;
+  const h = STATE.excelHeaders, rows = STATE.excelData.slice(0,5);
+  document.getElementById('preview-table').innerHTML = `<thead><tr>${h.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${h.map((_,i)=>`<td>${esc(String(r[i]??''))}</td>`).join('')}</tr>`).join('')}</tbody>`;
+
+  const SYNONYMS = {
+    num:    ['num','número','numero','nº','#','id','cod','code','ref','no'],
+    nom:    ['nom','nombre','name','jugador','player','descripcion','description','title','titulo','apellido'],
+    tipo:   ['tipo','type','categoria','category','clase','class','variante','variant','posicion','position'],
+    equipo: ['equipo','team','club','grupo','group','pais','country','nacion','seleccion','liga'],
+    rep:    ['rep','repetidos','repetido','duplicados','copies','cantidad','qty','extras','cantidad_rep']
+  };
+  const autoDetect = key => {
+    const hl = h.map(x => x.toLowerCase().trim());
+    for (const syn of SYNONYMS[key]) {
+      const i = hl.findIndex(x => x === syn || x.startsWith(syn) || x.includes(syn));
+      if (i !== -1) return i;
+    }
+    return -1;
+  };
+
+  const fields = [
+    {id:'map-num',   label:'# Número', key:'num'},
+    {id:'map-nom',   label:'Nombre',   key:'nom'},
+    {id:'map-tipo',  label:'Tipo',     key:'tipo'},
+    {id:'map-equipo',label:'Equipo',   key:'equipo'},
+    {id:'map-rep',   label:'Repetidos',key:'rep'}
+  ];
+  const opts = ['(ignorar)',...h].map((x,i) => `<option value="${i-1}">${esc(x)}</option>`).join('');
+  document.getElementById('col-mapping').innerHTML = fields.map(f => {
+    const ai = autoDetect(f.key);
+    return `<div class="mapping-row"><div class="mapping-label"><b>${f.label}</b>${ai>=0?` <span style="color:var(--green);font-size:10px">✓ auto</span>`:''}</div><select class="form-input" id="${f.id}" style="flex:1">${opts.replace(`value="${ai}"`,`value="${ai}" selected`)}</select></div>`;
   }).join('');
   document.getElementById('excel-preview').style.display=''; document.getElementById('drop-zone').style.display='none';
 }
@@ -2279,30 +2346,52 @@ function abrirStats() {
   const col = getCol(); if (!col) return;
   const s = computeStats(col);
   const pct = s.total > 0 ? Math.round((s.tengo / s.total) * 100) : 0;
+
+  // Gráfico de dona SVG
+  const R = 52, CX = 68, CY = 68, strokeW = 14;
+  const circ = 2 * Math.PI * R;
+  const fillArc = circ * (s.tengo / Math.max(s.total, 1));
+  const repsArc = circ * (Math.min(s.reps, s.total) / Math.max(s.total, 1));
+  const donut = `<svg viewBox="0 0 136 136" width="136" height="136" style="display:block;margin:0 auto 8px">
+    <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="var(--surface3)" stroke-width="${strokeW}"/>
+    <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="var(--green)" stroke-width="${strokeW}"
+      stroke-dasharray="${fillArc} ${circ}" stroke-dashoffset="${circ/4}" stroke-linecap="round"/>
+    <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="var(--yellow)" stroke-width="${strokeW-4}"
+      stroke-dasharray="${repsArc} ${circ}" stroke-dashoffset="${circ/4 - fillArc}" stroke-linecap="round" opacity="0.7"/>
+    <text x="${CX}" y="${CY-8}" text-anchor="middle" font-size="22" font-weight="800" fill="var(--text)" font-family="JetBrains Mono,monospace">${pct}%</text>
+    <text x="${CX}" y="${CY+12}" text-anchor="middle" font-size="11" fill="var(--text3)" font-family="Outfit,sans-serif">completado</text>
+  </svg>`;
+
   const equipos = {};
   col.cromos.forEach(c => {
-    const eq = (c.equipo || c.tipo || 'Sin categoría');
-    if (!equipos[eq]) equipos[eq] = { total: 0, tengo: 0 };
+    const eq = c.equipo || c.tipo || 'Sin categoría';
+    if (!equipos[eq]) equipos[eq] = { total: 0, tengo: 0, reps: 0 };
     equipos[eq].total++;
     if (c.tengo !== false) equipos[eq].tengo++;
+    if (c.repetidos > 0) equipos[eq].reps++;
   });
-  const eqSorted = Object.entries(equipos).sort((a, b) => b[1].total - a[1].total).slice(0, 12);
+  const eqSorted = Object.entries(equipos).sort((a,b) => b[1].total - a[1].total).slice(0, 15);
   const hist = (col.historial || []).slice(0, 20);
+
   document.getElementById('stats-content').innerHTML = `
-    <div class="stats-grid">
-      <div class="stats-block"><div class="stats-block-title">Total cromos</div><div class="stats-block-val">${s.total}</div></div>
-      <div class="stats-block"><div class="stats-block-title">Completado</div><div class="stats-block-val" style="color:var(--${pct===100?'green':'accent'})">${pct}%</div></div>
-      <div class="stats-block"><div class="stats-block-title">Tengo</div><div class="stats-block-val" style="color:var(--green)">${s.tengo}</div></div>
-      <div class="stats-block"><div class="stats-block-title">Faltan</div><div class="stats-block-val" style="color:var(--red)">${s.falta}</div></div>
-      <div class="stats-block"><div class="stats-block-title">Con repetidos</div><div class="stats-block-val" style="color:var(--yellow)">${s.reps}</div></div>
-      <div class="stats-block"><div class="stats-block-title">Con foto</div><div class="stats-block-val">${col.cromos.filter(c => c.fotoFront).length}</div></div>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+      <div>${donut}</div>
+      <div class="stats-grid" style="flex:1;min-width:160px">
+        <div class="stats-block"><div class="stats-block-title">Total</div><div class="stats-block-val">${s.total}</div></div>
+        <div class="stats-block"><div class="stats-block-title">Tengo</div><div class="stats-block-val" style="color:var(--green)">${s.tengo}</div></div>
+        <div class="stats-block"><div class="stats-block-title">Faltan</div><div class="stats-block-val" style="color:var(--red)">${s.falta}</div></div>
+        <div class="stats-block"><div class="stats-block-title">Repetidos</div><div class="stats-block-val" style="color:var(--yellow)">${s.reps}</div></div>
+        <div class="stats-block"><div class="stats-block-title">Con foto</div><div class="stats-block-val">${col.cromos.filter(c=>c.fotoFront).length}</div></div>
+        <div class="stats-block"><div class="stats-block-title">Añadidos hoy</div><div class="stats-block-val">${col.cromos.filter(c=>c.addedAt&&(Date.now()-c.addedAt)<86400000).length}</div></div>
+      </div>
     </div>
     ${eqSorted.length > 0 ? `
     <p style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--text2)">Por equipo / categoría</p>
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;">
       ${eqSorted.map(([eq, d]) => {
         const p = Math.round((d.tengo / d.total) * 100);
-        return '<div class="equipo-row"><div class="equipo-name">' + esc(eq) + '</div><div class="equipo-bar-wrap"><div class="equipo-bar-fill" style="width:' + p + '%"></div></div><div class="equipo-pct">' + p + '%</div></div>';
+        const color = p===100 ? 'var(--green)' : p>60 ? 'var(--accent)' : p>30 ? 'var(--yellow)' : 'var(--red)';
+        return `<div class="equipo-row"><div class="equipo-name">${esc(eq)}</div><div style="font-size:10px;color:var(--text3);white-space:nowrap">${d.tengo}/${d.total}</div><div class="equipo-bar-wrap"><div class="equipo-bar-fill" style="width:${p}%;background:${color};transition:width 0.5s ease"></div></div><div class="equipo-pct" style="color:${color}">${p}%</div></div>`;
       }).join('')}
     </div>` : ''}
     ${hist.length > 0 ? `
@@ -2312,7 +2401,7 @@ function abrirStats() {
         const d = new Date(h.fecha);
         const ds = d.toLocaleDateString('es',{day:'2-digit',month:'2-digit'}) + ' ' + d.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
         const lbl = h.tipo==='add' ? '+ añadido' : h.tipo==='del' ? '− eliminado' : '✎ editado';
-        return '<div class="hist-row"><span class="hist-badge ' + h.tipo + '">' + lbl + '</span><span style="flex:1;font-size:12px;">' + esc(h.desc) + '</span><span class="hist-date">' + ds + '</span></div>';
+        return `<div class="hist-row"><span class="hist-badge ${h.tipo}">${lbl}</span><span style="flex:1;font-size:12px;">${esc(h.desc)}</span><span class="hist-date">${ds}</span></div>`;
       }).join('')}
     </div>` : '<p style="color:var(--text3);font-size:13px;margin-top:4px;">Sin historial todavía.</p>'}
   `;
@@ -2359,53 +2448,111 @@ async function _compressToB64(obj) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
+// ══════════════════════════════════════════
+//  📤 INTERCAMBIO — Google Drive Share
+//  1. Sube share_XXXX.json a Drive y lo hace público
+//  2. QR = share.html?id=FILEID (70 chars, QR mínimo)
+//  3. Receptor descarga via Drive public URL sin autenticación
+// ══════════════════════════════════════════
+
+// Sube JSON a Drive, lo hace público y devuelve el fileId
+async function _driveShareUpload(filename, data) {
+  if (!_driveAccessToken) throw new Error('Drive no conectado — pulsa "Conectar Drive" primero');
+
+  const json = JSON.stringify(data);
+
+  // 1. Buscar si ya existe un share con ese nombre para reutilizarlo
+  let fileId = null;
+  try {
+    const search = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and trashed=false&fields=files(id)`,
+      { headers: { Authorization: `Bearer ${_driveAccessToken}` } }
+    );
+    const sd = await search.json();
+    if (sd.files?.length) fileId = sd.files[0].id;
+  } catch {}
+
+  // 2. Subir o actualizar el archivo
+  const meta = { name: filename, mimeType: 'application/json' };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+  form.append('file', new Blob([json], { type: 'application/json' }));
+
+  const uploadUrl = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`;
+
+  const uploadRes = await fetch(uploadUrl, {
+    method: fileId ? 'PATCH' : 'POST',
+    headers: { Authorization: `Bearer ${_driveAccessToken}` },
+    body: form
+  });
+  if (!uploadRes.ok) throw new Error(`Drive upload error ${uploadRes.status}`);
+  const uploaded = await uploadRes.json();
+  fileId = uploaded.id;
+
+  // 3. Hacer el archivo público (cualquiera con el enlace puede leerlo)
+  await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${_driveAccessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ role: 'reader', type: 'anyone' })
+  });
+
+  return fileId;
+}
+
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
 
   const repes = col.cromos
     .filter(c => c.repetidos > 0 && c.tengo !== false)
-    .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
+    .map(c => ({ num: c.numero, nom: c.nombre||'', tip: c.tipo||'', eq: c.equipo||'' }));
   const faltas = col.cromos
     .filter(c => c.tengo === false)
-    .map(c => ({ num: c.numero, nom: c.nombre||'', eq: c.equipo||'', tip: c.tipo||'' }));
+    .map(c => ({ num: c.numero, nom: c.nombre||'', tip: c.tipo||'', eq: c.equipo||'' }));
 
-  const shareData = { n: col.name, e: col.emoji, r: repes, f: faltas, ts: Date.now() };
   const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
-
-  let link;
-  try {
-    const compressed = await _compressToB64(shareData);
-    link = base + '?z=' + compressed;
-  } catch {
-    link = base + '?data=' + encodeURIComponent(JSON.stringify(shareData));
-  }
-
-  document.getElementById('share-link-input').value = link;
-
-  // QR generado localmente con QRCode.js — sin servidores externos
   const qrContainer = document.getElementById('qr-container');
-  qrContainer.innerHTML = '';
+  const linkInput   = document.getElementById('share-link-input');
+
+  qrContainer.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text3)">
+    <div style="font-size:32px;margin-bottom:8px">⏳</div>
+    <div style="font-size:13px">Subiendo lista a Drive…</div>
+  </div>`;
+  linkInput.value = '';
+  openModal('modal-intercambio');
+
   try {
-    new QRCode(qrContainer, {
-      text: link,
-      width: 240,
-      height: 240,
-      colorDark: '#000000',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M
-    });
-    // Centrar el canvas/img que genera la librería
-    qrContainer.style.cssText = 'display:flex;justify-content:center;padding:12px;background:#fff;border-radius:10px;';
+    const shareData = { n: col.name, e: col.emoji||'🃏', r: repes, f: faltas, ts: Date.now() };
+    // Nombre fijo por colección → siempre sobreescribe el anterior
+    const filename  = `nc_share_${col.id}.json`;
+    const fileId    = await _driveShareUpload(filename, shareData);
+
+    // URL de descarga pública de Drive
+    const link = `${base}?id=${fileId}`;
+    linkInput.value = link;
+
+    // QR con fileId: ~120 chars → QR versión 5, muy legible
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&ecc=M&margin=4&data=${encodeURIComponent(link)}`;
+    qrContainer.innerHTML = `<img src="${qrUrl}" width="240" height="240"
+      style="border-radius:10px;display:block;margin:0 auto;background:#fff;padding:10px;"
+      onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>⚠️ QR no disponible — copia el enlace</p>'">`;
+
   } catch(e) {
-    console.warn('QR generation failed:', e);
-    qrContainer.innerHTML = `<p style="color:var(--text3);font-size:12px;text-align:center;padding:16px">⚠️ No se pudo generar el QR — copia el enlace</p>`;
+    console.error('Drive share error:', e);
+    qrContainer.innerHTML = `<div style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);border-radius:10px;padding:20px;text-align:center">
+      <div style="font-size:28px;margin-bottom:8px">⚠️</div>
+      <div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:6px">${e.message}</div>
+    </div>`;
   }
 
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
   if (el) el.textContent = waText;
-  openModal('modal-intercambio');
 }
 function copiarEnlace() {
   const v = document.getElementById('share-link-input').value;
@@ -2655,22 +2802,25 @@ function globalSearch() {
   if (!q || q.length < 2) { res.innerHTML = ''; return; }
   const terms = q.split(/\s+/);
   const hits = [];
-  for (const col of STATE.colecciones) {
+  outer: for (const col of STATE.colecciones) {
     for (const c of col.cromos) {
       const hay = `${c.numero} ${c.nombre} ${c.tipo||''} ${c.equipo||''}`.toLowerCase();
       if (terms.every(t => hay.includes(t))) hits.push({ col, c });
-      if (hits.length >= 30) break;
+      if (hits.length >= 50) break outer;
     }
-    if (hits.length >= 30) break;
   }
   if (!hits.length) { res.innerHTML = '<div class="gsearch-more">Sin resultados</div>'; return; }
-  res.innerHTML = hits.slice(0, 20).map(({ col, c }) =>
-    `<div class="gsearch-item" onclick="openColeccion('${col.id}');setTimeout(()=>{document.getElementById('search-input').value=${JSON.stringify(c.numero)};debouncedSearch();},200)">
+  res.innerHTML = hits.slice(0, 30).map(({ col, c }) => {
+    const statusColor = c.tengo === false ? 'var(--red)' : c.repetidos > 0 ? 'var(--yellow)' : 'var(--green)';
+    const statusIcon  = c.tengo === false ? '✖' : c.repetidos > 0 ? `×${c.repetidos}` : '✔';
+    return `<div class="gsearch-item" onclick="openColeccion('${col.id}');setTimeout(()=>{document.getElementById('search-input').value=${JSON.stringify(c.nombre||c.numero)};debouncedSearch();},250)">
       <span class="gsearch-col-name">${esc(col.emoji)} ${esc(col.name)}</span>
-      <span class="gsearch-cromo-num">${esc(c.numero)}</span>
+      <span class="gsearch-cromo-num">#${esc(c.numero)}</span>
       <span class="gsearch-cromo-name">${esc(c.nombre)}</span>
-    </div>`
-  ).join('') + (hits.length > 20 ? `<div class="gsearch-more">+${hits.length-20} más resultados. Afina la búsqueda.</div>` : '');
+      ${c.equipo ? `<span style="color:var(--text3);font-size:11px">${esc(c.equipo)}</span>` : ''}
+      <span style="color:${statusColor};font-size:12px;font-weight:700;margin-left:auto">${statusIcon}</span>
+    </div>`;
+  }).join('') + (hits.length > 30 ? `<div class="gsearch-more">+${hits.length-30} más — afina la búsqueda</div>` : '');
 }
 
 // ══════════════════════════════════════════
@@ -2788,18 +2938,19 @@ function initPWA() {
 
   // ── Service Worker: inyectado como data: URL (evita restricción blob en SW) ──
   if ('serviceWorker' in navigator) {
+    const SW_VERSION = Date.now();
     const swCode = `
-const CACHE='naarros-v5';
-const PRECACHE=[location.href];
+const CACHE='naarros-v${SW_VERSION}';
 self.addEventListener('install',e=>{self.skipWaiting();});
 self.addEventListener('activate',e=>{
-  e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
+  e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>{console.log('SW: borrando caché antiguo',k);return caches.delete(k)}))));
   self.clients.claim();
 });
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET')return;
   const url=e.request.url;
   if(url.startsWith('blob:')||url.startsWith('chrome-extension:'))return;
+  if(url.includes('googleapis.com')||url.includes('accounts.google.com'))return;
   e.respondWith(
     fetch(e.request).then(r=>{
       if(r&&r.status===200&&url.startsWith('http')){
