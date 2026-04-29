@@ -18,6 +18,7 @@
 <title>CollectionsDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 // ══════════════════════════════════════════
@@ -2521,29 +2522,33 @@ async function abrirIntercambio(colId) {
 
   qrContainer.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text3)">
     <div style="font-size:32px;margin-bottom:8px">⏳</div>
-    <div style="font-size:13px">Subiendo lista a Drive…</div>
+    <div style="font-size:13px">Generando QR…</div>
   </div>`;
   linkInput.value = '';
   openModal('modal-intercambio');
 
+  // Comprimir los datos y meterlos directamente en la URL
+  // deflate-raw comprime muy bien los números: 600 cromos → ~1200-1800 chars
+  // qrserver.com genera el QR en servidor → sin límite de librería local
   try {
     const shareData = { n: col.name, e: col.emoji||'🃏', r: repes, f: faltas, ts: Date.now() };
-    // Nombre fijo por colección → siempre sobreescribe el anterior
-    const filename  = `nc_share_${col.id}.json`;
-    const fileId    = await _driveShareUpload(filename, shareData);
-
-    // URL de descarga pública de Drive
-    const link = `${base}?id=${fileId}`;
+    const z    = await _compressToB64(shareData);
+    const link = `${base}?z=${z}`;
     linkInput.value = link;
 
-    // QR con fileId: ~120 chars → QR versión 5, muy legible
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&ecc=M&margin=4&data=${encodeURIComponent(link)}`;
-    qrContainer.innerHTML = `<img src="${qrUrl}" width="240" height="240"
-      style="border-radius:10px;display:block;margin:0 auto;background:#fff;padding:10px;"
-      onerror="this.parentNode.innerHTML='<p style=color:var(--text3);font-size:12px;text-align:center;padding:16px>⚠️ QR no disponible — copia el enlace</p>'">`;
+    // QR generado con qrcode.js local
+    qrContainer.innerHTML = '';
+    const qrWrap = document.createElement('div');
+    qrWrap.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
+    try {
+      new QRCode(qrWrap, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
+    } catch(e) {
+      qrWrap.innerHTML = '<p style="color:red;font-size:11px;padding:8px">Error al generar QR</p>';
+    }
+    qrContainer.appendChild(qrWrap);
 
   } catch(e) {
-    console.error('Drive share error:', e);
+    console.error('Share error:', e);
     qrContainer.innerHTML = `<div style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);border-radius:10px;padding:20px;text-align:center">
       <div style="font-size:28px;margin-bottom:8px">⚠️</div>
       <div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:6px">${e.message}</div>
