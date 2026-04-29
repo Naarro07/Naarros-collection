@@ -255,42 +255,42 @@ async function _decompressString(b64url) {
 }
 
 async function init() {
-  const params = new URLSearchParams(location.search);
+  const params     = new URLSearchParams(location.search);
+  const shareId    = params.get('id');
   const compressed = params.get('z');
   const rawData    = params.get('data');
-  const minimal    = params.get('q');  // formato QR: "Nombre|emoji|r:1,2,3|f:4,5,6"
 
+  // ── ?id= → descargar JSON desde GitHub (sin autenticación) ──
+  if (shareId) {
+    try {
+      // Cache-busting con timestamp para evitar que GitHub sirva versión antigua
+      const url = `https://raw.githubusercontent.com/naarro07/Naarros-collection/main/shares/${shareId}.json`;
+      const res = await fetch(url + '?t=' + Date.now());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.n) throw new Error('invalid data');
+      renderPage(data);
+    } catch(e) {
+      console.error('GitHub share error:', e);
+      showError();
+    }
+    return;
+  }
+
+  // ── ?z= → URL comprimida (fallback cuando GitHub falla) ──
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
     catch(e) { console.error('Decompress error:', e); showError(); }
     return;
   }
 
+  // ── ?data= → JSON plano legado ──
   if (rawData) {
     try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
     catch { showError(); }
     return;
   }
 
-  if (minimal) {
-    try {
-      // Intentar descomprimir primero (formato nuevo comprimido)
-      let raw;
-      try { raw = await _decompressString(minimal); }
-      catch { raw = decodeURIComponent(minimal); }
-
-      const parts = raw.split('§');
-      const name  = parts[0] || 'Colección';
-      const emoji = parts[1] || '🃏';
-      const rPart = (parts.find(p => p.startsWith('r:')) || 'r:').slice(2);
-      const fPart = (parts.find(p => p.startsWith('f:')) || 'f:').slice(2);
-      const toList = str => str ? str.split(',').filter(Boolean).map(n => ({ num: n, nom: '', eq: '', tip: '' })) : [];
-      renderPage({ n: name, e: emoji, r: toList(rPart), f: toList(fPart), ts: Date.now() });
-    } catch { showError(); }
-    return;
-  }
-
-  // ?id= de Firebase ya no está soportado
   showError();
 }
 
