@@ -255,36 +255,36 @@ async function _decompressString(b64url) {
 }
 
 async function init() {
-  const params     = new URLSearchParams(location.search);
-  const shareId    = params.get('id');
+  const params = new URLSearchParams(location.search);
+  const fileId     = params.get('id');
   const compressed = params.get('z');
   const rawData    = params.get('data');
 
-  // ── ?id= → descargar JSON desde GitHub (sin autenticación) ──
-  if (shareId) {
+  // ── ?id= → descargar JSON público de Google Drive ──
+  if (fileId) {
     try {
-      // Cache-busting con timestamp para evitar que GitHub sirva versión antigua
-      const url = `https://raw.githubusercontent.com/naarro07/Naarros-collection/main/shares/${shareId}.json`;
-      const res = await fetch(url + '?t=' + Date.now());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Para archivos públicos Drive tiene este endpoint directo
+      const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Error ${res.status}`);
       const data = await res.json();
-      if (!data.n) throw new Error('invalid data');
+      if (!data.n) throw new Error('Datos inválidos');
       renderPage(data);
     } catch(e) {
-      console.error('GitHub share error:', e);
+      console.error('Drive download error:', e);
       showError();
     }
     return;
   }
 
-  // ── ?z= → URL comprimida (fallback cuando GitHub falla) ──
+  // ── ?z= → URL comprimida (fallback) ──
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
-    catch(e) { console.error('Decompress error:', e); showError(); }
+    catch { showError(); }
     return;
   }
 
-  // ── ?data= → JSON plano legado ──
+  // ── ?data= → JSON legado ──
   if (rawData) {
     try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
     catch { showError(); }
