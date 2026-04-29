@@ -166,8 +166,8 @@ function renderLista(lista, accentColor, iconGrupo) {
 }
 
 function renderPage(data) {
-  const repes = normalizar(data.r);
-  const faltas = normalizar(data.f);
+  const repes = normalizar(data.r).sort((a, b) => String(a.num).localeCompare(String(b.num), undefined, { numeric: true, sensitivity: 'base' }));
+  const faltas = normalizar(data.f).sort((a, b) => String(a.num).localeCompare(String(b.num), undefined, { numeric: true, sensitivity: 'base' }));
   const fecha = data.ts ? new Date(data.ts).toLocaleDateString('es', {day:'2-digit', month:'long', year:'numeric'}) : '';
 
   document.title = `${data.n} · Lista de intercambio`;
