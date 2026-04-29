@@ -35,6 +35,7 @@
 //    - Carga remota: descarga meta, luego fotos de cada col en paralelo.
 // ══════════════════════════════════════════
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
+  
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
 const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
@@ -2457,52 +2458,41 @@ async function _compressToB64(obj) {
 // ══════════════════════════════════════════
 
 // Sube JSON a Drive, lo hace público y devuelve el fileId
-async function _driveShareUpload(filename, data) {
-  if (!_driveAccessToken) throw new Error('Drive no conectado — pulsa "Conectar Drive" primero');
+async function _githubShareUpload(shareData) {
+  const slug = `share_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+  const path = `shares/${slug}.json`;
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(shareData))));
 
-  const json = JSON.stringify(data);
-
-  // 1. Buscar si ya existe un share con ese nombre para reutilizarlo
-  let fileId = null;
+  // Intentar GET por si ya existe (para sacar el sha y hacer PUT)
+  let sha = undefined;
   try {
-    const search = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and trashed=false&fields=files(id)`,
-      { headers: { Authorization: `Bearer ${_driveAccessToken}` } }
+    const check = await fetch(
+      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`,
+      { headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' } }
     );
-    const sd = await search.json();
-    if (sd.files?.length) fileId = sd.files[0].id;
+    if (check.ok) { const d = await check.json(); sha = d.sha; }
   } catch {}
 
-  // 2. Subir o actualizar el archivo
-  const meta = { name: filename, mimeType: 'application/json' };
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-  form.append('file', new Blob([json], { type: 'application/json' }));
+  const body = { message: `share: ${slug}`, content };
+  if (sha) body.sha = sha;
 
-  const uploadUrl = fileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id`
-    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id`;
-
-  const uploadRes = await fetch(uploadUrl, {
-    method: fileId ? 'PATCH' : 'POST',
-    headers: { Authorization: `Bearer ${_driveAccessToken}` },
-    body: form
-  });
-  if (!uploadRes.ok) throw new Error(`Drive upload error ${uploadRes.status}`);
-  const uploaded = await uploadRes.json();
-  fileId = uploaded.id;
-
-  // 3. Hacer el archivo público (cualquiera con el enlace puede leerlo)
-  await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${_driveAccessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ role: 'reader', type: 'anyone' })
-  });
-
-  return fileId;
+  const res = await fetch(
+    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(`GitHub upload error ${res.status}: ${err.message}`);
+  }
+  return slug; // el ID que va en la URL
 }
 
 async function abrirIntercambio(colId) {
@@ -2528,33 +2518,24 @@ async function abrirIntercambio(colId) {
   openModal('modal-intercambio');
 
   try {
-    // Omitir nombres para minimizar URL — equipo y tipo se conservan para agrupar en share.html
     const compact = arr => arr.map(c => {
-      const o = { num: c.num };
-      if (c.eq)  o.eq  = c.eq;
-      if (c.tip) o.tip = c.tip;
-      return o;
-    });
+  const o = { num: c.num };
+  if (c.eq)  o.eq  = c.eq;
+  if (c.tip) o.tip = c.tip;
+  return o;
+});
 
-    const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
-    // Si Drive está conectado → subir y usar ?id= (URL corta, funciona con 600+ cromos)
-    // Si no → fallback a compresión URL
-    let link;
-    if (_driveAccessToken) {
-      const filename = `share_${col.id}.json`;
-      const fileId = await _driveShareUpload(filename, shareData);
-      link = `${base}?id=${fileId}`;
-    } else {
-      const z = await _compressToB64(shareData);
-      link = `${base}?z=${z}`;
-    }
-    linkInput.value = link;
-    
-    qrContainer.innerHTML = '';
-    const qrDiv = document.createElement('div');
-    qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
-    new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
-    qrContainer.appendChild(qrDiv);
+const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
+
+const slug = await _githubShareUpload(shareData);
+const link = `${base}?id=${slug}`;
+linkInput.value = link;
+
+qrContainer.innerHTML = '';
+const qrDiv = document.createElement('div');
+qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
+new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
+qrContainer.appendChild(qrDiv);
 
   } catch(e) {
     console.error('Share error:', e);
