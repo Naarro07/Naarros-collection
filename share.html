@@ -257,31 +257,28 @@ async function init() {
   const compressed = params.get('z');
   const rawData    = params.get('data');
 
-  // ── ?id= → descargar JSON público de Google Drive ──
   if (fileId) {
-  try {
-    const res = await fetch(⁠ https://api.jsonbin.io/v3/b/${fileId}/latest ⁠, {
-      headers: { 'X-Access-Key': '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG' }
-    });
-    if (!res.ok) throw new Error(⁠ Error ${res.status} ⁠);
-    const d = await res.json();
-    if (!d.record?.n) throw new Error('Datos inválidos');
-    renderPage(d.record);
-  } catch(e) {
-    console.error('JSONbin error:', e);
-    showError();
+    try {
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${fileId}/latest`, {
+        headers: { 'X-Access-Key': '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG' }
+      });
+      if (!res.ok) throw new Error(`Error ${res.status}`);
+      const d = await res.json();
+      if (!d.record?.n) throw new Error('Datos inválidos');
+      renderPage(d.record);
+    } catch(e) {
+      console.error('JSONbin error:', e);
+      showError();
+    }
+    return;
   }
-  return;
-}
 
-  // ── ?z= → URL comprimida (fallback) ──
   if (compressed) {
     try { renderPage(await _decompressFromB64(compressed)); }
     catch { showError(); }
     return;
   }
 
-  // ── ?data= → JSON legado ──
   if (rawData) {
     try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
     catch { showError(); }
