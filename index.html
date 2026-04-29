@@ -1492,19 +1492,10 @@ function renderCromos() {
   if (!isManual) {
     const dir = STATE.cromoSortDir, key = STATE.cromoSortKey;
     if (key === 'numero') {
-      // Base cards (sin tipo o tipo "base"): agrupar por equipo, dentro por número
-      const isBase = c => !c.tipo || c.tipo.toLowerCase().includes('base') || c.tipo.trim() === '';
-      const baseCards = data.filter(isBase);
-      const specials = data.filter(c => !isBase(c));
-
-      baseCards.sort((a, b) => {
-        const ea = (a.equipo||'').toLowerCase(), eb = (b.equipo||'').toLowerCase();
-        if (ea !== eb) return dir * ea.localeCompare(eb);
-        return cmpNumero(a, b, dir);
+      // Orden numérico natural nativo (ej: 1, 2, 10, A1, A10)
+      data.sort((a, b) => {
+        return dir * String(a.numero).localeCompare(String(b.numero), undefined, { numeric: true, sensitivity: 'base' });
       });
-      // Especiales: mantener orden original de col.cromos (índice manual)
-      specials.sort((a, b) => col.cromos.indexOf(a) - col.cromos.indexOf(b));
-      data = [...baseCards, ...specials];
     } else {
       data.sort((a, b) => {
         let va, vb;
@@ -2417,8 +2408,10 @@ function abrirStats() {
 function _buildWAText(colId) {
   const col = STATE.colecciones.find(c => c.id === colId);
   if (!col) return '';
-  const repes = col.cromos.filter(c => c.repetidos > 0 && c.tengo !== false);
-  const faltas = col.cromos.filter(c => c.tengo === false);
+  const repes = col.cromos.filter(c => c.repetidos > 0 && c.tengo !== false)
+    .sort((a, b) => String(a.numero).localeCompare(String(b.numero), undefined, { numeric: true, sensitivity: 'base' }));
+  const faltas = col.cromos.filter(c => c.tengo === false)
+    .sort((a, b) => String(a.numero).localeCompare(String(b.numero), undefined, { numeric: true, sensitivity: 'base' }));
   let lineas = [];
   lineas.push(`📦 *${col.emoji} ${col.name}*`);
   lineas.push(`📊 Total: ${col.cromos.length} | ✔ Tengo: ${col.cromos.filter(c=>c.tengo!==false).length} | ✖ Faltan: ${faltas.length} | 🔁 Repes: ${repes.length}`);
