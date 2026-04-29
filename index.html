@@ -35,9 +35,8 @@
 //    - Carga remota: descarga meta, luego fotos de cada col en paralelo.
 // ══════════════════════════════════════════
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
-const GITHUB_OWNER = 'naarro07';
-const GITHUB_REPO  = 'Naarros-collection';
-const GITHUB_TOKEN = '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';
+const JSONBIN_MASTER_KEY = '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG';
+const JSONBIN_COLLECTION_ID = '';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
 const DRIVE_PHOTO_PFX  = 'nc_photos_';   // + colId + '.json'
@@ -2460,41 +2459,22 @@ async function _compressToB64(obj) {
 // ══════════════════════════════════════════
 
 // Sube JSON a Drive, lo hace público y devuelve el fileId
-async function _githubShareUpload(shareData) {
-  const slug = `share_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
-  const path = `shares/${slug}.json`;
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(shareData))));
-
-  // Intentar GET por si ya existe (para sacar el sha y hacer PUT)
-  let sha = undefined;
-  try {
-    const check = await fetch(
-      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`,
-      { headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' } }
-    );
-    if (check.ok) { const d = await check.json(); sha = d.sha; }
-  } catch {}
-
-  const body = { message: `share: ${slug}`, content };
-  if (sha) body.sha = sha;
-
-  const res = await fetch(
-    `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`,
-    {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: 'application/vnd.github+json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    }
-  );
+async function _jsonbinShareUpload(shareData) {
+  const res = await fetch('https://api.jsonbin.io/v3/b', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Master-Key': JSONBIN_MASTER_KEY,
+      'X-Bin-Private': 'false'
+    },
+    body: JSON.stringify(shareData)
+  });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(`GitHub upload error ${res.status}: ${err.message}`);
+    throw new Error(⁠ JSONbin error ${res.status}: ${err.message || ''} ⁠);
   }
-  return slug; // el ID que va en la URL
+  const d = await res.json();
+  return d.metadata.id; // bin ID ~24 chars
 }
 
 async function abrirIntercambio(colId) {
@@ -2521,7 +2501,7 @@ async function abrirIntercambio(colId) {
 
   try {
     const compact = arr => arr.map(c => {
-  const o = { num: c.num };
+  const slug = await _jsonbinShareUpload(shareData);
   if (c.eq)  o.eq  = c.eq;
   if (c.tip) o.tip = c.tip;
   return o;
