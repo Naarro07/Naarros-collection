@@ -2471,7 +2471,7 @@ async function _jsonbinShareUpload(shareData) {
   });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(⁠ JSONbin error ${res.status}: ${err.message || ''}`⁠);
+    throw new Error(`JSONbin error ${res.status}: ${err.message || ''}`);
   }
   const d = await res.json();
   return d.metadata.id; // bin ID ~24 chars
@@ -2501,23 +2501,22 @@ async function abrirIntercambio(colId) {
 
   try {
     const compact = arr => arr.map(c => {
-  const slug = await _jsonbinShareUpload(shareData);
-  if (c.eq)  o.eq  = c.eq;
-  if (c.tip) o.tip = c.tip;
-  return o;
-});
+      const o = { num: c.num };
+      if (c.eq)  o.eq  = c.eq;
+      if (c.tip) o.tip = c.tip;
+      return o;
+    });
 
-const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
+    const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
+    const slug = await _jsonbinShareUpload(shareData);
+    const link = `${base}?id=${slug}`;
+    linkInput.value = link;
 
-const slug = await _githubShareUpload(shareData);
-const link = `${base}?id=${slug}`;
-linkInput.value = link;
-
-qrContainer.innerHTML = '';
-const qrDiv = document.createElement('div');
-qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
-new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
-qrContainer.appendChild(qrDiv);
+    qrContainer.innerHTML = '';
+    const qrDiv = document.createElement('div');
+    qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
+    new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
+    qrContainer.appendChild(qrDiv);
 
   } catch(e) {
     console.error('Share error:', e);
@@ -2530,17 +2529,6 @@ qrContainer.appendChild(qrDiv);
   const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
   if (el) el.textContent = waText;
-}
-function copiarEnlace() {
-  const v = document.getElementById('share-link-input').value;
-  navigator.clipboard.writeText(v).then(() => toast('Enlace copiado ✅')).catch(() => toast('No se pudo copiar','⚠️'));
-}
-function copiarWAIntercambio() {
-  const text = document.getElementById('wa-output-intercambio')?.textContent;
-  if (!text) return;
-  navigator.clipboard.writeText(text).then(() => toast('¡Copiado!','✅')).catch(() => {
-    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('¡Copiado!','✅');
-  });
 }
 
 // ══════════════════════════════════════════
