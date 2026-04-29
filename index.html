@@ -2471,7 +2471,7 @@ async function _jsonbinShareUpload(shareData) {
   });
   if (!res.ok) {
     const err = await res.json();
-    throw new Error(⁠ JSONbin error ${res.status}: ${err.message || ''} ⁠);
+    throw new Error(⁠ JSONbin error ${res.status}: ${err.message || ''}`⁠);
   }
   const d = await res.json();
   return d.metadata.id; // bin ID ~24 chars
