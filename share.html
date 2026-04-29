@@ -260,15 +260,15 @@ async function init() {
   // ── ?id= → descargar JSON público de Google Drive ──
   if (fileId) {
   try {
-    // fileId aquí es el slug (share_TIMESTAMP_XXXX)
-    const rawUrl = `https://raw.githubusercontent.com/naarro07/Naarros-collection/main/shares/${fileId}.json`;
-    const res = await fetch(rawUrl);
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const data = await res.json();
-    if (!data.n) throw new Error('Datos inválidos');
-    renderPage(data);
+    const res = await fetch(⁠ https://api.jsonbin.io/v3/b/${fileId}/latest ⁠, {
+      headers: { 'X-Access-Key': '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG' }
+    });
+    if (!res.ok) throw new Error(⁠ Error ${res.status} ⁠);
+    const d = await res.json();
+    if (!d.record?.n) throw new Error('Datos inválidos');
+    renderPage(d.record);
   } catch(e) {
-    console.error('GitHub download error:', e);
+    console.error('JSONbin error:', e);
     showError();
   }
   return;
