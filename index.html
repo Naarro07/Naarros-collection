@@ -1842,7 +1842,19 @@ function confirmarDelCol() { pushUndo('Eliminar colección'); STATE.colecciones 
 //  CROMOS CRUD
 // ══════════════════════════════════════════
 function onCardClick(id) { if (STATE.selMode) toggleCromo(id); }
-function toggleCromo(id) { const c = getCromoById(id); if (c) c.sel = !c.sel; renderCromos(); }
+function toggleCromo(id) {
+  const c = getCromoById(id);
+  if (!c) return;
+  c.sel = !c.sel;
+  // Actualizar solo el nodo afectado sin re-renderizar toda la lista
+  const card = document.querySelector(`.cromo-card[data-id="${id}"]`);
+  if (card) {
+    card.classList.toggle('selected', c.sel);
+    const cb = card.querySelector('.cromo-checkbox, .grid-sel-check');
+    if (cb) cb.checked = c.sel;
+  }
+  updateSelUI();
+}
 function changeRep(d) { let v = parseInt(document.getElementById('c-rep').value)||0; v = Math.max(0, v+d); document.getElementById('c-rep').value = v; document.getElementById('c-rep-val').textContent = v; }
 function setModalTengo(val) {
   document.getElementById('c-tengo').value = val;
