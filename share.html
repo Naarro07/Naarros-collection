@@ -260,7 +260,7 @@ async function init() {
   if (fileId) {
     try {
       const res = await fetch(`https://api.jsonbin.io/v3/b/${fileId}/latest`, {
-        headers: { 'X-Access-Key': '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG' }
+        headers: { 'X-Access-Key': '' }  // JSONbin bins públicos no necesitan key para leer
       });
       if (!res.ok) throw new Error(`Error ${res.status}`);
       const d = await res.json();
