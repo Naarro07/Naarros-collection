@@ -1561,13 +1561,19 @@ function renderCromos() {
 
   if (STATE.viewMode === 'list') {
     const useGrouped = !isManual && STATE.cromoSortKey === 'numero';
+    const scrollEl = document.getElementById('view-col') || document.scrollingElement;
+    const savedScroll = scrollEl ? scrollEl.scrollTop || window.scrollY : 0;
     if (useGrouped) {
       list.innerHTML = buildGroupedListHTML(data, col);
     } else {
       renderWithVirtualScroll(list, data, col, isManual);
     }
+    requestAnimationFrame(() => { if (scrollEl) scrollEl.scrollTop = savedScroll; else window.scrollTo(0, savedScroll); });
   } else {
+    const scrollEl = document.getElementById('view-col') || document.scrollingElement;
+    const savedScroll = scrollEl ? scrollEl.scrollTop || window.scrollY : 0;
     renderWithVirtualScroll(list, data, col, isManual);
+    requestAnimationFrame(() => { if (scrollEl) scrollEl.scrollTop = savedScroll; else window.scrollTo(0, savedScroll); });
   }
 }
 
