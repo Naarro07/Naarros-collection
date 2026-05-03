@@ -35,7 +35,8 @@
 //    - Carga remota: descarga meta, luego fotos de cada col en paralelo.
 // ══════════════════════════════════════════
 const DRIVE_CLIENT_ID  = '697016052556-ga689s2v0h69ii1hg4l0hu1sd83n0pv9.apps.googleusercontent.com';
-const JSONBIN_MASTER_KEY = '$2a$10$DjvRswvOnNsJWYH5sKwwIueQ2gG1A/Y.NM0.MfU.5/ol/0NDI7oBG';
+// ⚠️ API key movida a localStorage — configúrala en Ajustes de la app
+// const JSONBIN_MASTER_KEY = ''; // ya no se usa hardcodeada
 const JSONBIN_COLLECTION_ID = '';
 const DRIVE_SCOPE      = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_META_NAME  = 'nc_meta.json';
@@ -455,6 +456,10 @@ body::before { content: ''; position: fixed; inset: 0; background: radial-gradie
 .list-equipo { font-size: 11px; font-weight: 700; color: var(--text3); background: var(--surface3); border-radius: 4px; padding: 1px 6px; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; }
 .list-tipo-badge { font-size: 11px; font-weight: 600; color: var(--accent2); background: rgba(124,92,252,0.1); border: 1px solid rgba(124,92,252,0.2); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
 .cromo-rep-badge { background: rgba(251,191,36,0.12); color: var(--yellow); border: 1px solid rgba(251,191,36,0.25); border-radius: 20px; padding: 3px 10px; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.rep-inline { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.rep-inline-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text2); font-size: 14px; font-weight: 700; width: 26px; height: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; transition: background 0.12s; }
+.rep-inline-btn:hover { background: var(--surface3); color: var(--yellow); border-color: rgba(251,191,36,0.4); }
+.rep-inline-val { font-size: 12px; font-weight: 700; color: var(--yellow); min-width: 22px; text-align: center; }
 .cromo-actions { display: flex; gap: 6px; transition: opacity 0.15s; }
 @media (hover: hover) {
   .cromo-actions { opacity: 0; }
@@ -690,6 +695,7 @@ select.form-input { cursor: pointer; }
     </div>
     <div class="home-actions">
       <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
+      <button class="theme-toggle" onclick="openModal('modal-ajustes')" title="Ajustes">⚙️</button>
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
       <div class="storage-info" id="storage-info"><div class="sync-spinner"></div><div class="dot"></div><span id="storage-label">Cargando…</span></div>
       <button class="btn btn-secondary" onclick="openModal('modal-catalogo');renderCatalogo()">📚 Catálogo</button>
@@ -1053,6 +1059,27 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
+<!-- MODAL AJUSTES -->
+<div class="overlay" id="modal-ajustes">
+  <div class="modal">
+    <div class="modal-close" onclick="closeModal('modal-ajustes')">×</div>
+    <h3>⚙️ Ajustes</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Las API keys se guardan solo en tu dispositivo, nunca se envían a ningún servidor externo.</p>
+    <div class="form-group">
+      <label>API Key de Remove.bg <span style="color:var(--text3);font-weight:400;font-size:11px">(para recortar fondos de fotos)</span></label>
+      <input class="form-input" id="aj-removebg" type="password" placeholder="Pega tu API key aquí">
+    </div>
+    <div class="form-group">
+      <label>API Key de JSONbin <span style="color:var(--text3);font-weight:400;font-size:11px">(para compartir listas por QR)</span></label>
+      <input class="form-input" id="aj-jsonbin" type="password" placeholder="$2a$10$...">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-ajustes')">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarAjustes()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toast-container"></div>
 
 <script>
@@ -1061,8 +1088,24 @@ select.form-input { cursor: pointer; }
 //  Arranque instantáneo — almacenamiento local + Google Drive opcional
 // ══════════════════════════════════════════
 
-const MY_UID = 'naarro-personal';
-let _currentUser = { uid: MY_UID };
+function guardarAjustes() {
+  const rbg = document.getElementById('aj-removebg').value.trim();
+  const jb  = document.getElementById('aj-jsonbin').value.trim();
+  try {
+    if (rbg) localStorage.setItem('nc_removebg_key', rbg);
+    if (jb)  localStorage.setItem('nc_jsonbin_key', jb);
+  } catch {}
+  closeModal('modal-ajustes');
+  toast('Ajustes guardados', '✅');
+}
+
+// ── API keys configurables por el usuario (no hardcodeadas) ──
+function getRemoveBgKey() {
+  try { return localStorage.getItem('nc_removebg_key') || ''; } catch { return ''; }
+}
+function getJsonbinKey() {
+  try { return localStorage.getItem('nc_jsonbin_key') || ''; } catch { return ''; }
+}
 
 function hideSplash() {
   const s = document.getElementById('splash');
@@ -1070,6 +1113,8 @@ function hideSplash() {
 }
 const EMOJIS = ['⭐','🏆','⚽','🏀','🎮','🦁','🐉','🌍','🎯','🎨','🚀','🎸','🦊','🌊','🔥','💎','🌈','🍕','🐋','🦋'];
 const SAVE_DELAY = 400;
+
+const MY_UID = 'naarro-personal';
 
 let STATE = {
   colecciones: [], currentColId: null, selMode: false,
@@ -1361,6 +1406,12 @@ function showView(id) {
   }
 }
 function goHome() {
+  // Guardar posición de scroll de la colección actual
+  if (STATE.currentColId) {
+    const el = document.getElementById('view-col');
+    const pos = el ? el.scrollTop : window.scrollY;
+    try { localStorage.setItem('nc_scroll_' + STATE.currentColId, pos); } catch {}
+  }
   STATE.currentColId = null; STATE.selMode = false; STATE.filtroRep = false; STATE.filtroFalta = false;
   _cromoIndex = null; document.getElementById('fab').style.display = 'none';
   document.getElementById('view-col').classList.remove('active');
@@ -1386,11 +1437,13 @@ function openColeccion(id) {
     const d = document.getElementById('csort-dir-btn'); if (d) { d.style.display = 'flex'; d.textContent = '↑'; }
   }, 0);
   updateSelUI(); renderCromos(); showView('view-col');
-  // Scroll al inicio al abrir la colección
+  // Restaurar scroll guardado o ir al inicio
   requestAnimationFrame(() => {
     const el = document.getElementById('view-col');
-    if (el) el.scrollTop = 0;
-    window.scrollTo(0, 0);
+    let savedScroll = 0;
+    try { savedScroll = parseInt(localStorage.getItem('nc_scroll_' + id)) || 0; } catch {}
+    if (el) el.scrollTop = savedScroll;
+    if (!savedScroll) window.scrollTo(0, 0);
   });
 }
 
@@ -1433,7 +1486,7 @@ function renderCromos() {
     if (STATE.filtroRep && c.repetidos <= 0) return false;
     if (STATE.filtroFalta && c.tengo !== false) return false;
     if (terms.length) {
-      const h = `${c.numero} ${c.nombre} ${c.tipo||''} ${c.equipo||''}`.toLowerCase();
+      const h = `${c.numero} ${c.nombre} ${c.tipo||''} ${c.equipo||''} ${c.notas||''} ${c.desc||''}`.toLowerCase();
       if (!terms.every(t => h.includes(t))) return false;
     }
     return true;
@@ -1613,7 +1666,11 @@ function buildListCardHTML(c, col, isManual) {
         ${equipoLabel}${tipoLabel}
       </div>
     </div>
-    ${c.repetidos > 0 ? `<div class="cromo-rep-badge">×${c.repetidos}</div>` : ''}
+    ${c.tengo !== false && !STATE.selMode ? `<div class="rep-inline" onclick="event.stopPropagation()">
+      <button class="rep-inline-btn" onclick="changeRepInline('${c.id}',-1)">−</button>
+      <span class="rep-inline-val">${c.repetidos > 0 ? '×'+c.repetidos : '0'}</span>
+      <button class="rep-inline-btn" onclick="changeRepInline('${c.id}',1)">+</button>
+    </div>` : (c.repetidos > 0 ? `<div class="cromo-rep-badge">×${c.repetidos}</div>` : '')}
     <button class="tengo-btn ${esNoTengo?'no-tengo':'tengo'}" onclick="event.stopPropagation();toggleTengo('${c.id}')"><span class="dot"></span>${esNoTengo?'Falta':'Tengo'}</button>
     ${!STATE.selMode ? `<div class="cromo-actions" onclick="event.stopPropagation()"><button class="cromo-action-btn" onclick="editCromo('${c.id}')">✏️</button><button class="cromo-action-btn del" onclick="askDelCromo('${c.id}')">🗑</button></div>` : ''}
   </div>`;
@@ -1796,10 +1853,21 @@ function openModal(id) {
   if (id === 'modal-cromo' && !STATE.editingCromoId) {
     document.getElementById('modal-cromo-title').textContent = 'Añadir cromo';
     document.getElementById('btn-guardar-cromo').textContent = 'Guardar';
-    ['c-num','c-nom','c-tipo','c-equipo'].forEach(i => document.getElementById(i).value = '');
+    ['c-num','c-nom'].forEach(i => document.getElementById(i).value = '');
+    // Recordar último equipo y tipo para agilizar entrada en serie
+    try {
+      document.getElementById('c-tipo').value = localStorage.getItem('nc_last_tipo') || '';
+      document.getElementById('c-equipo').value = localStorage.getItem('nc_last_equipo') || '';
+    } catch { document.getElementById('c-tipo').value = ''; document.getElementById('c-equipo').value = ''; }
     document.getElementById('c-rep').value = '0'; document.getElementById('c-rep-val').textContent = '0';
     setModalTengo(true);
     resetFotos();
+  }
+  if (id === 'modal-ajustes') {
+    try {
+      document.getElementById('aj-removebg').value = localStorage.getItem('nc_removebg_key') || '';
+      document.getElementById('aj-jsonbin').value  = localStorage.getItem('nc_jsonbin_key') || '';
+    } catch {}
   }
   document.getElementById(id).classList.add('show');
   // Focus primer input tras animación
@@ -1886,6 +1954,8 @@ function guardarCromo() {
       fotoFront: _fotoFront||null, fotoBack: _fotoBack||null};
     col.cromos.push(nc); if (_cromoIndex) _cromoIndex.set(nc.id, nc);
     addHistorial(STATE.currentColId,'add',`Añadido #${num} ${nom}`);
+    // Recordar último equipo y tipo para el siguiente cromo
+    try { if (tipo) localStorage.setItem('nc_last_tipo', tipo); if (equipo) localStorage.setItem('nc_last_equipo', equipo); } catch {}
     toast('Cromo añadido ✅');
   }
   // Pasar colId como dirty solo si hubo cambios en fotos
@@ -1928,6 +1998,18 @@ function confirmarDelCromo() {
   save(hadPhotos ? STATE.currentColId : null);
   renderCromos(); closeModal('modal-confirm-del-cromo');
   toastUndo('Cromo eliminado', '🗑️');
+}
+function changeRepInline(id, delta) {
+  const c = getCromoById(id);
+  if (!c || c.tengo === false) return;
+  c.repetidos = Math.max(0, (c.repetidos || 0) + delta);
+  save();
+  // Actualizar solo el nodo afectado
+  const card = document.querySelector(`.cromo-card[data-id="${id}"]`);
+  if (card) {
+    const val = card.querySelector('.rep-inline-val');
+    if (val) val.textContent = c.repetidos > 0 ? '×' + c.repetidos : '0';
+  }
 }
 function toggleTengo(id) {
   const c = getCromoById(id);
@@ -1986,8 +2068,27 @@ function marcarTengoSel(estado) {
   toast(`Marcados como "${estado?'Tengo':'Falta'}" (${sel.length})`, '✅');
 }
 function toggleSelMode() { STATE.selMode = !STATE.selMode; if (!STATE.selMode) getCol().cromos.forEach(c => c.sel=false); updateSelUI(); renderCromos(); }
-function selAll() { getCol().cromos.forEach(c => c.sel=true); renderCromos(); }
-function invertSel() { getCol().cromos.forEach(c => c.sel=!c.sel); renderCromos(); }
+function selAll() {
+  getCol().cromos.forEach(c => { c.sel = true; });
+  document.querySelectorAll('.cromo-card').forEach(card => {
+    card.classList.add('selected');
+    const cb = card.querySelector('.cromo-checkbox, .grid-sel-check');
+    if (cb) cb.checked = true;
+  });
+  updateSelUI();
+}
+function invertSel() {
+  getCol().cromos.forEach(c => { c.sel = !c.sel; });
+  document.querySelectorAll('.cromo-card').forEach(card => {
+    const id = card.dataset.id;
+    const c = getCromoById(id);
+    if (!c) return;
+    card.classList.toggle('selected', c.sel);
+    const cb = card.querySelector('.cromo-checkbox, .grid-sel-check');
+    if (cb) cb.checked = c.sel;
+  });
+  updateSelUI();
+}
 function delSel() { const col=getCol(), ids=new Set(col.cromos.filter(c=>c.sel).map(c=>c.id)); if (!ids.size){toast('Ningún cromo seleccionado','⚠️');return;} pushUndo('Eliminar selección'); col.cromos=col.cromos.filter(c=>!ids.has(c.id)); if(_cromoIndex) ids.forEach(id=>_cromoIndex.delete(id)); save(); renderCromos(); toastUndo(`${ids.size} eliminado(s)`,'🗑️'); }
 function openEditSel() { const col=getCol(); if(!col.cromos.filter(c=>c.sel).length){toast('Ningún cromo seleccionado','⚠️');return;} ['es-nom','es-tipo','es-rep'].forEach(i=>document.getElementById(i).value=''); openModal('modal-edit-sel'); }
 function guardarEditSel() {
@@ -2259,7 +2360,7 @@ async function recortarFondo() {
 async function quitarFondoRemoveBg(dataUrl) {
   // remove.bg API — clave pública de demostración (50 imágenes gratis/mes por cuenta)
   // El usuario puede poner su propia API key aquí si se queda sin créditos
-  const REMOVEBG_KEY = 'hUoKHmFiVZiY6FWbsMNMhokS'; // demo key — sustituir si agota
+  const REMOVEBG_KEY = getRemoveBgKey();
 
   // Convertir dataUrl a Blob
   const res = await fetch(dataUrl);
@@ -2469,7 +2570,7 @@ async function _jsonbinShareUpload(shareData) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Master-Key': JSONBIN_MASTER_KEY,
+      'X-Master-Key': getJsonbinKey(),
       'X-Bin-Private': 'false'
     },
     body: JSON.stringify(shareData)
@@ -2645,6 +2746,14 @@ document.querySelectorAll('.overlay').forEach(o => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     document.querySelectorAll('.overlay.show').forEach(o => closeModal(o.id));
+  }
+  // Atajo N: abrir modal de nuevo cromo (solo en vista colección, sin modales abiertos)
+  if ((e.key === 'n' || e.key === 'N') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const anyModal = document.querySelector('.overlay.show');
+    const inCol = document.getElementById('view-col')?.classList.contains('active');
+    const focused = document.activeElement;
+    const isInput = focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.isContentEditable);
+    if (inCol && !anyModal && !isInput) { e.preventDefault(); abrirNuevoCromo(); }
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     const active = document.querySelector('.overlay.show:not(#modal-excel)');
