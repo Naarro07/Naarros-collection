@@ -1472,7 +1472,6 @@ let _fabOpen = false;
 document.getElementById('fab').addEventListener('click', () => {
   openModal('modal-cromo');
 });
-function closeFabMenu() {}
 
 // ══════════════════════════════════════════
 //  RENDER CROMOS
@@ -1560,39 +1559,102 @@ function renderCromos() {
   }
 
   const scrollEl = document.getElementById('view-col');
-  const savedScroll = scrollEl ? scrollEl.scrollTop : 0;
+  const anchor = captureScrollAnchor(scrollEl);
 
   if (STATE.viewMode === 'list') {
     const useGrouped = !isManual && STATE.cromoSortKey === 'numero';
     if (useGrouped) {
       list.innerHTML = buildGroupedListHTML(data, col);
     } else {
-      renderWithVirtualScroll(list, data, col, isManual);
+      renderWithVirtualScroll(list, data, col, isManual, anchor?.id);
     }
   } else {
-    renderWithVirtualScroll(list, data, col, isManual);
+    renderWithVirtualScroll(list, data, col, isManual, anchor?.id);
   }
 
-  if (savedScroll > 0 && scrollEl) {
-    scrollEl.scrollTop = savedScroll;
-    // Doble seguro: algunos navegadores móviles necesitan el siguiente frame
-    requestAnimationFrame(() => { scrollEl.scrollTop = savedScroll; });
+  if (anchor) {
+    restoreScrollAnchor(scrollEl, anchor);
+    // Doble seguro: si la carta aún no estaba en el DOM (virtual scroll cargando)
+    // o el navegador necesita un frame extra para asentar el layout, se reintenta.
+    requestAnimationFrame(() => restoreScrollAnchor(scrollEl, anchor));
   }
 }
 
+// Guarda qué carta está justo visible arriba del todo del contenedor y a qué
+// distancia exacta (en píxeles) del borde superior, para poder devolverla
+// exactamente a la misma posición visual tras un re-render, sin importar
+// cuántas tarjetas cambien de tamaño, de grupo o de orden.
+function captureScrollAnchor(scrollEl) {
+  if (!scrollEl || scrollEl.scrollTop <= 0) return null;
+  const containerTop = scrollEl.getBoundingClientRect().top;
+  const cards = scrollEl.querySelectorAll('[data-id]');
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (rect.bottom > containerTop) {
+      return { id: card.getAttribute('data-id'), offset: rect.top - containerTop };
+    }
+  }
+  return null;
+}
+
+// Busca esa misma carta tras el re-render y ajusta el scroll para que
+// quede exactamente en la misma posición en la que estaba antes de editar.
+// Devuelve true si la carta ya estaba en el DOM (éxito), false si aún no
+// se ha cargado (p.ej. virtual scroll en curso).
+function restoreScrollAnchor(scrollEl, anchor) {
+  if (!scrollEl || !anchor) return false;
+  const card = scrollEl.querySelector(`[data-id="${anchor.id}"]`);
+  if (!card) return false;
+  const containerTop = scrollEl.getBoundingClientRect().top;
+  const rect = card.getBoundingClientRect();
+  const delta = (rect.top - containerTop) - anchor.offset;
+  scrollEl.scrollTop += delta;
+  return true;
+}
+
 let _vsObserver = null;
-function renderWithVirtualScroll(list, data, col, isManual) {
+function renderWithVirtualScroll(list, data, col, isManual, anchorId) {
   const BATCH = 80;
   if (_vsObserver) { _vsObserver.disconnect(); _vsObserver = null; }
   const buildFn = STATE.viewMode === 'grid'
     ? c => buildGridCardHTML(c, col, isManual)
     : c => buildListCardHTML(c, col, isManual);
 
-  // Calcular cuántos elementos necesitamos renderizar para cubrir el scroll actual
   const scrollEl = document.getElementById('view-col');
   const currentScroll = scrollEl ? scrollEl.scrollTop : 0;
-  // Estimación conservadora: si hay scroll, renderizar más elementos inicialmente
-  const initialBatch = currentScroll > 0 ? Math.min(data.length, BATCH * 3) : BATCH;
+
+  let initialBatch = BATCH;
+  if (currentScroll > 0) {
+    // Medir una tarjeta ya presente en el DOM (del render anterior, antes de
+    // sobrescribir el innerHTML) para saber cuántos elementos hacen falta
+    // realmente para cubrir el scroll actual, en vez de una estimación fija.
+    const sampleCard = list.querySelector('.cromo-card');
+    if (sampleCard) {
+      const rect = sampleCard.getBoundingClientRect();
+      const cardH = rect.height || 80;
+      let itemsPerRow = 1;
+      if (STATE.viewMode === 'grid') {
+        const listWidth = list.clientWidth || rect.width;
+        itemsPerRow = Math.max(1, Math.floor(listWidth / (rect.width || 140)));
+      }
+      const viewportH = scrollEl ? scrollEl.clientHeight : window.innerHeight;
+      const rowsNeeded = Math.ceil((currentScroll + viewportH) / cardH);
+      const itemsNeeded = rowsNeeded * itemsPerRow;
+      // Margen de un par de filas extra para que el usuario pueda seguir
+      // haciendo scroll sin toparse con contenido vacío al instante.
+      initialBatch = Math.min(data.length, itemsNeeded + itemsPerRow * 2);
+    } else {
+      // Fallback si aún no hay ninguna tarjeta que medir (primer render)
+      initialBatch = Math.min(data.length, BATCH * 3);
+    }
+  }
+
+  // Garantía adicional: si venimos de editar una carta concreta, asegurar que
+  // esa carta quede dentro del primer lote renderizado sí o sí.
+  if (anchorId) {
+    const anchorIndex = data.findIndex(c => c.id === anchorId);
+    if (anchorIndex >= 0) initialBatch = Math.max(initialBatch, Math.min(data.length, anchorIndex + BATCH));
+  }
 
   list.innerHTML = data.slice(0, initialBatch).map(buildFn).join('');
   if (data.length <= initialBatch) return;
@@ -2287,7 +2349,6 @@ function quitarFoto(side) {
   }
 }
 
-function updateAIBtn() {}
 
 function setRecorteStatus(msg, cls = '') {
   const el = document.getElementById('recorte-status');
