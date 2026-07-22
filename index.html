@@ -1713,7 +1713,7 @@ function buildGroupedListHTML(data, col) {
       if (!teams[k]) teams[k] = [];
       teams[k].push(c);
     });
-    Object.entries(teams).sort(([a],[b]) => a.localeCompare(b)).forEach(([team, cards]) => {
+    Object.entries(teams).forEach(([team, cards]) => {
       const tengo = cards.filter(c => c.tengo !== false).length;
       const pct = Math.round(tengo / cards.length * 100);
       html += `<div class="group-header">
