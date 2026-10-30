@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex,nofollow">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.jsonbin.io; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Lista de intercambio · CollectionDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -107,6 +108,7 @@ function hideSplash() {
 function showError() { hideSplash(); document.getElementById('error').classList.add('show'); }
 
 function normalizar(lista) {
+  if (!Array.isArray(lista)) return [];
   return (lista || []).map(item => {
     if (typeof item === 'object' && item?.num !== undefined) return item;
     const s = String(item);
@@ -155,7 +157,7 @@ function renderLista(lista, accentColor, iconGrupo) {
             <div class="cromo-tag">
               <div class="cromo-tag-num" style="color:${accentColor}">${esc(c.num)}</div>
               ${c.nom ? `<div class="cromo-tag-nom">${esc(c.nom)}</div>` : ''}
-              ${c.eq && !c.tip.toLowerCase().includes('base') ? `<div class="cromo-tag-tip">${esc(c.eq)}</div>` : ''}
+              ${c.eq && !(c.tip||'').toLowerCase().includes('base') ? `<div class="cromo-tag-tip">${esc(c.eq)}</div>` : ''}
             </div>`).join('')}
         </div>
       </div>`;
@@ -225,67 +227,19 @@ function renderPage(data) {
   hideSplash();
 }
 
-async function _decompressFromB64(b64url) {
-  return JSON.parse(await _decompressString(b64url));
-}
-
-async function _decompressString(b64url) {
-  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const stream = new DecompressionStream('deflate-raw');
-  const writer = stream.writable.getWriter();
-  writer.write(bytes);
-  writer.close();
-  const chunks = [];
-  const reader = stream.readable.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  let offset = 0;
-  const full = new Uint8Array(chunks.reduce((a,c) => a+c.length, 0));
-  for (const c of chunks) { full.set(c, offset); offset += c.length; }
-  return new TextDecoder().decode(full);
-}
-
 async function init() {
-  const params = new URLSearchParams(location.search);
-  const fileId     = params.get('id');
-  const compressed = params.get('z');
-  const rawData    = params.get('data');
-
-  if (fileId) {
-    try {
-      const res = await fetch(`https://api.jsonbin.io/v3/b/${fileId}/latest`, {
-        headers: { 'X-Access-Key': '' }  // JSONbin bins públicos no necesitan key para leer
-      });
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      const d = await res.json();
-      if (!d.record?.n) throw new Error('Datos inválidos');
-      renderPage(d.record);
-    } catch(e) {
-      console.error('JSONbin error:', e);
-      showError();
-    }
-    return;
+  const fileId = new URLSearchParams(location.search).get('id');
+  if (!fileId || !/^[a-f0-9]{24}$/i.test(fileId)) { showError(); return; }
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${encodeURIComponent(fileId)}/latest`);
+    if (!res.ok) throw new Error(`Error ${res.status}`);
+    const d = await res.json();
+    if (!d.record?.n) throw new Error('Datos inválidos');
+    renderPage(d.record);
+  } catch (e) {
+    console.error('JSONbin error:', e);
+    showError();
   }
-
-  if (compressed) {
-    try { renderPage(await _decompressFromB64(compressed)); }
-    catch { showError(); }
-    return;
-  }
-
-  if (rawData) {
-    try { renderPage(JSON.parse(decodeURIComponent(rawData))); }
-    catch { showError(); }
-    return;
-  }
-
-  showError();
 }
 
 init();
