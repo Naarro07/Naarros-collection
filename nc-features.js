@@ -1,4 +1,4 @@
-// ══════════════════════════════════════════
+// ═════════════════════════════════════════=
 //  nc-features.js
 //  Cruce de listas · Registro de trueques · Merge por cromo
 //  Exportar PDF · Backup cifrado
