@@ -1,10 +1,10 @@
-// ═════════════════════════════════════════=
+// ════════════════════════════════════════
 //  nc-features.js
 //  Cruce de listas · Registro de trueques · Merge por cromo
 //  Exportar PDF · Backup cifrado
 //  Requiere index.html (STATE, save, esc, toast, pushUndo, addHistorial,
 //  ID_RE, strCorto, sanitizarColecciones) con los parches aplicados.
-// ══════════════════════════════════════════
+// ════════════════════════════════════════
 
 const _norm = s => String(s ?? '').trim().replace(/^0+(?=\d)/, '');
 
