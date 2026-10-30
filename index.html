@@ -714,7 +714,6 @@ select.form-input { cursor: pointer; }
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
       <button class="btn btn-green" onclick="descargarBackupCifrado()">🔐 Copia cifrada</button>
       <div class="storage-info" id="storage-info"><div class="sync-spinner"></div><div class="dot"></div><span id="storage-label">Cargando…</span></div>
-      <button class="btn btn-secondary" onclick="openModal('modal-catalogo');renderCatalogo()">📚 Catálogo</button>
       <button class="btn btn-primary" onclick="openModal('modal-nueva-col')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
         Nueva colección
@@ -1081,20 +1080,6 @@ select.form-input { cursor: pointer; }
       <button class="btn btn-green" style="width:100%;margin-top:8px;" onclick="copiarWAIntercambio()">📋 Copiar para WhatsApp</button>
     </div>
     <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('modal-intercambio')">Cerrar</button></div>
-  </div>
-</div>
-
-<!-- MODAL CATÁLOGO COLECCIONES -->
-<div class="overlay" id="modal-catalogo">
-  <div class="modal modal-wide modal-tall">
-    <div class="modal-close" onclick="closeModal('modal-catalogo')">×</div>
-    <h3>📚 Catálogo de colecciones</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:14px;">Crea una colección a partir de un álbum conocido con los cromos ya pre-cargados.</p>
-    <div class="toolbar-search" style="margin-bottom:12px;max-width:100%">
-      <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="var(--text3)" stroke-width="1.6"/><path d="M10.5 10.5l3 3" stroke="var(--text3)" stroke-width="1.6" stroke-linecap="round"/></svg>
-      <input type="text" id="cat-search" placeholder="Buscar álbum…" oninput="filtrarCatalogo()" style="padding:9px 0;width:100%">
-    </div>
-    <div id="cat-list" style="display:flex;flex-direction:column;gap:8px;"></div>
   </div>
 </div>
 
@@ -1764,47 +1749,39 @@ function buildCromoCardHTML(c, col, isManual) {
 }
 
 function buildGroupedListHTML(data, col) {
-  // Separate base cards (have equipo) from specials
-  const isBaseCard = c => !c.tipo || c.tipo.toLowerCase().includes('base') || c.tipo.trim() === '';
-  const baseCards = data.filter(isBaseCard);
-  const specials = data.filter(c => !isBaseCard(c));
+  const isBaseCard = c => !c.tipo || c.tipo.trim() === '' || c.tipo.toLowerCase().includes('base');
+  const grupos = new Map();   // clave → { titulo, cards }, en orden de aparición
+
+  // data ya viene ordenada por número: el orden de inserción del Map es el numérico
+  for (const c of data) {
+    let key, titulo;
+    if (isBaseCard(c)) {
+      titulo = c.equipo || 'Sin equipo';
+      key = 'eq:' + titulo;
+    } else {
+      titulo = '✨ ' + c.tipo.trim();
+      key = 'tp:' + c.tipo.trim().toLowerCase();
+    }
+    if (!grupos.has(key)) grupos.set(key, { titulo, cards: [] });
+    grupos.get(key).cards.push(c);
+  }
 
   let html = '';
-
-  if (baseCards.length) {
-    // Group by team
-    const teams = {};
-    baseCards.forEach(c => {
-      const k = c.equipo || 'Sin equipo';
-      if (!teams[k]) teams[k] = [];
-      teams[k].push(c);
-    });
-    Object.entries(teams).forEach(([team, cards]) => {
-      const tengo = cards.filter(c => c.tengo !== false).length;
-      const pct = Math.round(tengo / cards.length * 100);
-      html += `<div class="group-header">
-        <div class="group-header-left">
-          <span class="group-name">${esc(team)}</span>
-          <span class="group-count">${cards.length} cromos</span>
-        </div>
-        <div class="group-progress-wrap">
-          <div class="group-progress-bar"><div class="group-progress-fill" style="width:${pct}%"></div></div>
-          <span class="group-pct">${pct}%</span>
-        </div>
-      </div>`;
-      cards.forEach(c => { html += buildListCardHTML(c, col, false); });
-    });
+  for (const { titulo, cards } of grupos.values()) {
+    const tengo = cards.filter(c => c.tengo !== false).length;
+    const pct = Math.round(tengo / cards.length * 100);
+    html += `<div class="group-header">
+      <div class="group-header-left">
+        <span class="group-name">${esc(titulo)}</span>
+        <span class="group-count">${cards.length} cromos</span>
+      </div>
+      <div class="group-progress-wrap">
+        <div class="group-progress-bar"><div class="group-progress-fill" style="width:${pct}%"></div></div>
+        <span class="group-pct">${pct}%</span>
+      </div>
+    </div>`;
+    cards.forEach(c => { html += buildListCardHTML(c, col, false); });
   }
-
-  if (specials.length) {
-    if (baseCards.length) {
-      html += `<div class="group-header" style="margin-top:8px;">
-        <div class="group-header-left"><span class="group-name">✨ Especiales</span><span class="group-count">${specials.length} cromos</span></div>
-      </div>`;
-    }
-    specials.forEach(c => { html += buildListCardHTML(c, col, false); });
-  }
-
   return html;
 }
 
@@ -2980,54 +2957,7 @@ document.getElementById('file-load').addEventListener('change', async (e) => {
   e.target.value = '';
 });
 
-// ══════════════════════════════════════════
-//  📚 CATÁLOGO DE COLECCIONES CONOCIDAS
-// ══════════════════════════════════════════
-const CATALOGO = [
-  { nombre: 'Panini LaLiga 2024-25', emoji: '⚽', tipo: 'futbol', total: 600, desc: 'Álbum oficial LaLiga EA Sports temporada 2024-25', cromos: () => { const a=[]; for(let i=1;i<=600;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Cromo '+i,tipo:'Base Card',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Panini Champions League 2024-25', emoji: '🏆', tipo: 'futbol', total: 648, desc: 'UEFA Champions League Sticker Collection', cromos: () => { const a=[]; for(let i=1;i<=648;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Cromo '+i,tipo:'Base Card',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Panini FIFA 365 2025', emoji: '🌍', tipo: 'futbol', total: 500, desc: 'FIFA 365 Adrenalyn XL 2025', cromos: () => { const a=[]; for(let i=1;i<=500;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Cromo '+i,tipo:'Base Card',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Panini LaLiga 2023-24', emoji: '⚽', tipo: 'futbol', total: 600, desc: 'Álbum oficial LaLiga temporada 2023-24', cromos: () => { const a=[]; for(let i=1;i<=600;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Cromo '+i,tipo:'Base Card',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Pokémon Scarlet & Violet Base', emoji: '🎮', tipo: 'pokemon', total: 258, desc: 'Pokémon TCG Scarlet & Violet Base Set', cromos: () => { const a=[]; for(let i=1;i<=258;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Carta '+i,tipo:'Pokémon',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Pokémon Obsidian Flames', emoji: '🔥', tipo: 'pokemon', total: 230, desc: 'Pokémon TCG Obsidian Flames', cromos: () => { const a=[]; for(let i=1;i<=230;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Carta '+i,tipo:'Pokémon',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Pokémon Paldea Evolved', emoji: '🌿', tipo: 'pokemon', total: 279, desc: 'Pokémon TCG Paldea Evolved', cromos: () => { const a=[]; for(let i=1;i<=279;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Carta '+i,tipo:'Pokémon',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Panini NBA 2024-25', emoji: '🏀', tipo: 'baloncesto', total: 450, desc: 'NBA Hoops 2024-25 Sticker Collection', cromos: () => { const a=[]; for(let i=1;i<=450;i++) a.push({id:uid(),numero:String(i).padStart(3,'0'),nombre:'Cromo '+i,tipo:'Base Card',equipo:'',repetidos:0,tengo:false,sel:false}); return a; } },
-  { nombre: 'Colección personalizada', emoji: '🃏', tipo: 'otros', total: 0, desc: 'Crea tu propia colección desde cero', cromos: () => [] },
-];
-
-function renderCatalogo() {
-  filtrarCatalogo();
-}
-
-function filtrarCatalogo() {
-  const q = (document.getElementById('cat-search')?.value || '').toLowerCase();
-  const lista = CATALOGO.filter(c => c.nombre.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q));
-  document.getElementById('cat-list').innerHTML = lista.map((c, i) => `
-    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;display:flex;align-items:center;gap:14px;">
-      <div style="font-size:28px;flex-shrink:0">${c.emoji}</div>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:15px;">${esc(c.nombre)}</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${esc(c.desc)}${c.total ? ` · ${c.total} cromos` : ''}</div>
-      </div>
-      <button class="btn btn-primary btn-sm" onclick="crearDesdeCalatogo(${i})">+ Crear</button>
-    </div>`).join('');
-}
-
-function crearDesdeCalatogo(idx) {
-  const cat = CATALOGO[idx];
-  if (!cat) return;
-  const cromos = cat.cromos();
-  const col = { id: uid(), name: cat.nombre, desc: cat.desc, emoji: cat.emoji, tipo: cat.tipo, createdAt: Date.now(), cromos, historial: [] };
-  STATE.colecciones.push(col);
-  save(); renderHome(); closeModal('modal-catalogo');
-  toast(`"${cat.nombre}" creada con ${cromos.length} cromos`, '✅');
-  if (cromos.length > 0) {
-    setTimeout(() => openColeccion(col.id), 300);
-  }
-}
-
 // modal-start se oculta dentro de load() si hay datos
-
 
 // ══════════════════════════════════════════
 //  🔍 BÚSQUEDA GLOBAL
