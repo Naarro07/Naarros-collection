@@ -8,105 +8,129 @@
 
 const _norm = s => String(s ?? '').trim().replace(/^0+(?=\d)/, '');
 
-// ── 1. CRUCE DE LISTAS ──────────────────────
-// Lee el texto que genera el generador de WhatsApp (con o sin nombres, agrupado o no)
-function parsearListaTexto(texto) {
-  const res = { repetidos: [], faltas: [] };
-  let seccion = null;
-  for (const raw of String(texto).split(/\r?\n/)) {
-    const linea = raw.trim();
-    if (!linea) { seccion = null; continue; }
-    const mayus = linea.toUpperCase();
-    if (mayus.includes('REPETIDOS')) { seccion = 'repetidos'; continue; }
-    if (mayus.includes('FALTAS'))    { seccion = 'faltas';    continue; }
-    if (!seccion || mayus.includes('NINGUNO')) continue;
-    for (const token of linea.split(',')) {
-      const t = token.trim()
-        .replace(/^_[^_]+:_\s*/, '')   // prefijo de equipo "_BARCELONA:_ 001"
-        .replace(/\([^)]*\)/g, '')     // nombre entre paréntesis
-        .replace(/x\d+$/i, '')         // cantidad "002x2"
-        .trim();
-      if (/^[A-Za-z0-9.\-]+$/.test(t)) res[seccion].push(_norm(t));
-    }
-  }
-  return res;
+// ── 1. CRUCE DE LISTAS (por colección) ──────
+let _cruceSel = [];      // ids de colecciones marcadas en el paso 1
+let _cruceTxt = null;    // texto escrito en el paso 2 (para no perderlo al volver atrás)
+let _cruceResult = null; // cambios calculados para la pantalla de confirmación
+
+const _normNum = s => String(s ?? '').trim().toUpperCase();
+
+// Extrae números de una línea: "219, 220, 370A" → ["219","220","370A"]
+function _parsearNumeros(texto) {
+  return [...new Set(
+    String(texto).split(/[,;\s]+/)
+      .map(_normNum)
+      .filter(t => /^[A-Z0-9.\-]{1,20}$/.test(t))
+  )];
 }
 
-function cruzarListas(col, otra) {
-  const repDeEllos = new Set(otra.repetidos);
-  const falDeEllos = new Set(otra.faltas);
-  return {
-    tePueden:  col.cromos.filter(c => c.tengo === false && repDeEllos.has(_norm(c.numero))),
-    puedesDar: col.cromos.filter(c => c.tengo !== false && c.repetidos > 0 && falDeEllos.has(_norm(c.numero))),
-  };
-}
-
-let _cruce = null;
-
-function abrirCruce(colId) {
-  const id = colId || STATE.currentColId;
-  if (!STATE.colecciones.find(c => c.id === id)) { toast('Abre una colección primero', '⚠️'); return; }
-  STATE.cruceColId = id;
-  _cruce = null;
-  document.getElementById('cruce-texto').value = '';
-  document.getElementById('cruce-result').innerHTML = '';
+// Paso 1: elegir colecciones
+function abrirCruce() {
+  if (!STATE.colecciones.length) { toast('No tienes colecciones', '⚠️'); return; }
+  _cruceSel = []; _cruceTxt = null; _cruceResult = null;
+  document.getElementById('cruce-paso').innerHTML = `
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Marca las colecciones en las que vais a cambiar cromos.</p>
+    ${STATE.colecciones.map(c => `<label class="wa-opt-label" style="padding:6px 0">
+      <input type="checkbox" class="cruce-col-chk" value="${esc(c.id)}" ${c.id === STATE.currentColId ? 'checked' : ''}>
+      ${esc(c.emoji)} ${esc(c.name)}</label>`).join('')}
+    <div class="modal-actions" style="justify-content:flex-start">
+      <button class="btn btn-primary" onclick="cruceIrPaso2()">Continuar</button>
+    </div>`;
   openModal('modal-cruce');
 }
 
-function ejecutarCruce() {
-  const otra = parsearListaTexto(document.getElementById('cruce-texto').value);
-  if (!otra.repetidos.length && !otra.faltas.length) { toast('No encuentro cromos en el texto', '⚠️'); return; }
-  const col = STATE.colecciones.find(c => c.id === STATE.cruceColId);
-  if (!col) return;
-  _cruce = cruzarListas(col, otra);
-
-  const fila = (c, tipo) => `<label class="wa-opt-label" style="padding:3px 0">
-    <input type="checkbox" data-tipo="${tipo}" value="${esc(c.id)}" checked>
-    <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`;
-  const bloque = (titulo, arr, tipo) => `<h4 style="font-size:13px;margin:14px 0 6px">${titulo} (${arr.length})</h4>`
-    + (arr.length ? arr.map(c => fila(c, tipo)).join('') : '<p style="color:var(--text3);font-size:13px">Ninguno</p>');
-
-  document.getElementById('cruce-result').innerHTML =
-    bloque('✅ Te pueden dar (te faltan)', _cruce.tePueden, 'recibe') +
-    bloque('📤 Tú les puedes dar (repetidos que buscan)', _cruce.puedesDar, 'da') +
-    `<div class="modal-actions" style="justify-content:flex-start;margin-top:12px">
-       <button class="btn btn-green" onclick="confirmarTruequeDesdeCruce()">🤝 Registrar trueque</button>
-     </div>`;
+// Paso 2: una línea por colección para "me dan" y otra para "doy"
+function cruceIrPaso2() {
+  if (_cruceSel.length === 0) {
+    _cruceSel = [...document.querySelectorAll('.cruce-col-chk:checked')].map(i => i.value);
+  }
+  if (!_cruceSel.length) { toast('Marca al menos una colección', '⚠️'); return; }
+  const cols = _cruceSel.map(id => STATE.colecciones.find(c => c.id === id)).filter(Boolean);
+  const valor = (tipo, id) => esc(_cruceTxt?.[tipo]?.[id] || '');
+  const linea = (tipo, col) => `<div style="margin-bottom:10px">
+    <label style="font-size:12px;font-weight:700;color:var(--text2)">${esc(col.emoji)} ${esc(col.name)}</label>
+    <input class="form-input" data-tipo="${tipo}" data-col="${esc(col.id)}" value="${valor(tipo, col.id)}"
+      placeholder="Ej: 219, 220, 370A" style="margin-top:4px"></div>`;
+  document.getElementById('cruce-paso').innerHTML = `
+    <h4 style="font-size:13px;margin:6px 0">📥 Cartas que me dan</h4>
+    ${cols.map(c => linea('recibe', c)).join('')}
+    <h4 style="font-size:13px;margin:14px 0 6px">📤 Cartas que doy</h4>
+    ${cols.map(c => linea('da', c)).join('')}
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn btn-secondary" onclick="abrirCruce()">← Atrás</button>
+      <button class="btn btn-primary" onclick="cruceCalcular()">Revisar</button>
+    </div>`;
 }
 
-function confirmarTruequeDesdeCruce() {
-  const marcados = tipo => [...document.querySelectorAll(`#cruce-result input[data-tipo="${tipo}"]:checked`)].map(i => i.value);
-  const dio = marcados('da'), recibio = marcados('recibe');
-  if (!dio.length && !recibio.length) { toast('Nada seleccionado', '⚠️'); return; }
-  registrarTrueque(STATE.cruceColId, dio, recibio);
+// Paso 3: calcular cambios y mostrar confirmación
+function cruceCalcular() {
+  const leer = tipo => Object.fromEntries(
+    [...document.querySelectorAll(`#cruce-paso input[data-tipo="${tipo}"]`)].map(i => [i.dataset.col, i.value])
+  );
+  _cruceTxt = { recibe: leer('recibe'), da: leer('da') };
+
+  const plan = [], avisos = [];
+  for (const colId of _cruceSel) {
+    const col = STATE.colecciones.find(c => c.id === colId); if (!col) continue;
+    const recNums = _parsearNumeros(_cruceTxt.recibe[colId] || '');
+    const daNums  = _parsearNumeros(_cruceTxt.da[colId] || '');
+    if (!recNums.length && !daNums.length) continue;   // línea vacía: esta colección no se toca
+
+    const porNum = new Map(col.cromos.map(c => [_normNum(c.numero), c]));
+    const item = { col, recibe: [], da: [] };
+
+    for (const n of recNums) {
+      const c = porNum.get(n);
+      if (!c) { avisos.push(`${col.name}: #${n} no existe`); continue; }
+      item.recibe.push(c);
+    }
+    for (const n of daNums) {
+      const c = porNum.get(n);
+      if (!c) { avisos.push(`${col.name}: #${n} no existe`); continue; }
+      if (!(c.repetidos > 0)) { avisos.push(`${col.name}: #${n} no es repetido, no se puede dar`); continue; }
+      item.da.push(c);
+    }
+    if (item.recibe.length || item.da.length) plan.push(item);
+  }
+
+  if (!plan.length) { toast('No hay cambios que registrar', '⚠️'); return; }
+  _cruceResult = plan;
+
+  const fila = (c, txt) => `<div style="font-size:13px;padding:3px 0">#${esc(c.numero)} ${esc(c.nombre)}
+    <span style="color:var(--text3)">${txt}</span></div>`;
+  document.getElementById('cruce-paso').innerHTML = `
+    <h4 style="font-size:13px;margin:6px 0">Confirmar trueque</h4>
+    ${plan.map(p => `<div class="cards-wrap" style="margin-bottom:10px">
+      <b>${esc(p.col.emoji)} ${esc(p.col.name)}</b>
+      ${p.recibe.map(c => fila(c, c.tengo === false ? '→ pasa a Tengo' : '→ repetido +1')).join('')}
+      ${p.da.map(c => fila(c, '→ repetido −1')).join('')}
+    </div>`).join('')}
+    ${avisos.length ? `<div style="color:var(--yellow);font-size:12px;margin:8px 0">${avisos.map(esc).join('<br>')}</div>` : ''}
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn btn-secondary" onclick="cruceIrPaso2()">← Editar</button>
+      <button class="btn btn-green" onclick="cruceConfirmar()">🤝 Confirmar trueque</button>
+    </div>`;
+}
+
+// Aplica los cambios de todas las colecciones del plan
+function cruceConfirmar() {
+  if (!_cruceResult?.length) return;
+  let aplicadas = 0;
+  for (const p of _cruceResult) {
+    const { dio, recibio } = _aplicarTrueque(p.col, p.da.map(c => c.numero), p.recibe.map(c => c.numero));
+    if (!dio.length && !recibio.length) continue;
+    p.col.trueques = [{ id: uid(), fecha: Date.now(), dio, recibio, nota: '' }, ...(p.col.trueques || [])].slice(0, 500);
+    addHistorial(p.col.id, 'edit', `Trueque: diste ${dio.length}, recibiste ${recibio.length}`);
+    aplicadas++;
+  }
+  _cruceResult = null;
+  save();
+  renderCromos();
   closeModal('modal-cruce');
+  toast(`Trueque registrado en ${aplicadas} colección(es) 🤝`, '✅');
 }
 
 // ── 2. REGISTRO DE TRUEQUES ─────────────────
-// Actualiza el inventario: −1 repetido por cada cromo dado, y falta→tengo o +1 repetido por cada recibido
-function registrarTrueque(colId, dioIds, recibioIds, nota = '') {
-  const col = STATE.colecciones.find(c => c.id === colId);
-  if (!col) return;
-  const dio = [], recibio = [];
-  for (const id of dioIds) {
-    const c = col.cromos.find(x => x.id === id);
-    if (!c || !(c.repetidos > 0)) continue;
-    c.repetidos--; dio.push({ numero: c.numero, nombre: c.nombre });
-  }
-  for (const id of recibioIds) {
-    const c = col.cromos.find(x => x.id === id);
-    if (!c) continue;
-    if (c.tengo === false) c.tengo = true; else c.repetidos = (c.repetidos || 0) + 1;
-    recibio.push({ numero: c.numero, nombre: c.nombre });
-  }
-  if (!dio.length && !recibio.length) { toast('Nada que registrar', '⚠️'); return; }
-  pushUndo('Registrar trueque');
-  col.trueques = [{ id: uid(), fecha: Date.now(), dio, recibio, nota: strCorto(nota, 200) }, ...(col.trueques || [])].slice(0, 500);
-  addHistorial(colId, 'edit', `Trueque: diste ${dio.length}, recibiste ${recibio.length}`);
-  save();
-  renderCromos();
-  toast(`Trueque registrado: diste ${dio.length}, recibiste ${recibio.length}`, '🤝');
-}
 
 function abrirTrueques() {
   const col = getCol(); if (!col) return;
