@@ -13,6 +13,7 @@
 <meta http-equiv="X-Frame-Options" content="DENY">
 <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
 <meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(), geolocation=()">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' data: https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://api.remove.bg https://api.jsonbin.io; frame-src https://accounts.google.com https://apis.google.com; worker-src 'self' blob: data:; manifest-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <link rel="apple-touch-icon" id="apple-touch-icon">
 <link rel="manifest" id="pwa-manifest">
 <title>CollectionsDB</title>
@@ -130,7 +131,7 @@ window.driveGetData = async () => {
 };
 
 // ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
-window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
+window.driveSetData = async (colecciones, version, savedAt, dirtyColIds, tombstones) => {
   if (!_driveAccessToken) return;
 
   // 1. Construir payload de meta SIN fotos
@@ -141,7 +142,7 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds) => {
       return rest;
     })
   }));
-  await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt });
+  await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt, tombstones });
 
   // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
@@ -711,6 +712,7 @@ select.form-input { cursor: pointer; }
       <button class="theme-toggle" id="theme-btn" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
       <button class="theme-toggle" onclick="openModal('modal-ajustes')" title="Ajustes">⚙️</button>
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
+      <button class="btn btn-green" onclick="descargarBackupCifrado()">🔐 Copia cifrada</button>
       <div class="storage-info" id="storage-info"><div class="sync-spinner"></div><div class="dot"></div><span id="storage-label">Cargando…</span></div>
       <button class="btn btn-secondary" onclick="openModal('modal-catalogo');renderCatalogo()">📚 Catálogo</button>
       <button class="btn btn-primary" onclick="openModal('modal-nueva-col')">
@@ -751,6 +753,8 @@ select.form-input { cursor: pointer; }
     </div>
     <button class="btn btn-secondary btn-sm" onclick="abrirStats()" title="Estadísticas">📊</button>
     <button class="btn btn-secondary btn-sm" onclick="abrirIntercambio()" title="Intercambio">🔄</button>
+    <button class="btn btn-secondary btn-sm" onclick="abrirCruce()" title="Cruce de listas">🤝</button>
+<button class="btn btn-secondary btn-sm" onclick="abrirTrueques()" title="Trueques">📜</button>
     <button class="btn btn-secondary btn-sm" onclick="abrirGeneradorWA()" title="WhatsApp">💬</button>
     <div class="col-topbar-progress"><div class="col-topbar-progress-fill" id="topbar-progress-fill" style="width:0%"></div></div>
   </div>
@@ -783,6 +787,7 @@ select.form-input { cursor: pointer; }
       <button class="sort-dir-btn" id="csort-dir-btn" onclick="toggleCromoSortDir()">↑</button>
       <button class="btn btn-secondary btn-sm" onclick="openModal('modal-excel')">📊 Excel</button>
       <button class="btn btn-secondary btn-sm" onclick="exportExcel()">⬇ Exportar</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportarPDF()">🖨 PDF</button>
       <div class="divider"></div>
       <div class="view-toggle" title="Cambiar vista">
         <button class="view-toggle-btn" id="btn-view-list" onclick="setViewMode('list')" title="Vista lista">☰</button>
@@ -1026,6 +1031,26 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
+<div class="overlay" id="modal-cruce">
+  <div class="modal modal-wide modal-tall">
+    <div class="modal-close" onclick="closeModal('modal-cruce')">×</div>
+    <h3>🤝 Cruce de listas</h3>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px;">Pega aquí el texto de WhatsApp de la otra persona.</p>
+    <textarea id="cruce-texto" class="form-input" rows="6" style="font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical"></textarea>
+    <div class="modal-actions" style="justify-content:flex-start"><button class="btn btn-primary" onclick="ejecutarCruce()">Cruzar</button></div>
+    <div id="cruce-result"></div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('modal-cruce')">Cerrar</button></div>
+  </div>
+</div>
+
+<div class="overlay" id="modal-trueques">
+  <div class="modal modal-wide modal-tall">
+    <div class="modal-close" onclick="closeModal('modal-trueques')">×</div>
+    <h3>📜 Trueques</h3>
+    <div id="trueques-list"></div>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="closeModal('modal-trueques')">Cerrar</button></div>
+  </div>
+</div>
 
 <!-- MODAL ESTADÍSTICAS -->
 <div class="overlay" id="modal-stats">
@@ -1097,6 +1122,47 @@ select.form-input { cursor: pointer; }
 <div class="toast-container" id="toast-container"></div>
 
 <script>
+
+  const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const FOTO_RE = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/i;
+const esFotoValida = s => typeof s === 'string' && FOTO_RE.test(s);
+const strCorto = (v, max) => String(v ?? '').slice(0, max);
+
+function sanitizarColecciones(arr) {
+  if (!Array.isArray(arr)) return null;
+  return arr.filter(col => col && typeof col === 'object').map(col => ({
+    id: ID_RE.test(String(col.id)) ? String(col.id) : uid(),
+    name: strCorto(col.name || 'Sin nombre', 120),
+    desc: strCorto(col.desc || '', 300),
+    emoji: strCorto(col.emoji || '🃏', 8),
+    tipo: strCorto(col.tipo || 'otros', 30),
+    createdAt: Number(col.createdAt) || 0,
+    historial: Array.isArray(col.historial)
+      ? col.historial.slice(0, 200).filter(h => h && typeof h === 'object')
+          .map(h => ({ fecha: Number(h.fecha) || 0, tipo: strCorto(h.tipo, 10), desc: strCorto(h.desc, 200) }))
+      : [],
+    modAt: Number(col.modAt) || 0,
+    trueques: sanitizarTrueques(col.trueques),
+    cromos: Array.isArray(col.cromos)
+      ? col.cromos.filter(c => c && typeof c === 'object').map(c => ({
+          id: ID_RE.test(String(c.id)) ? String(c.id) : uid(),
+          numero: strCorto(c.numero, 20),
+          nombre: strCorto(c.nombre, 200),
+          tipo: strCorto(c.tipo, 100),
+          equipo: strCorto(c.equipo, 100),
+          repetidos: Math.max(0, parseInt(c.repetidos) || 0),
+          tengo: c.tengo !== false,
+          sel: false,
+          addedAt: Number(c.addedAt) || 0,
+          modAt: Number(c.modAt) || 0,
+          fotoFront: esFotoValida(c.fotoFront) ? c.fotoFront : null,
+          fotoBack:  esFotoValida(c.fotoBack)  ? c.fotoBack  : null,
+        }))
+      : []
+  }));
+}
+
+
 // ══════════════════════════════════════════
 //  ⚡ APP PERSONAL
 //  Arranque instantáneo — almacenamiento local + Google Drive opcional
@@ -1140,6 +1206,8 @@ let STATE = {
   cromoSortKey: 'numero', cromoSortDir: 1,
   fichaColId: null,
   viewMode: 'grid',
+  tombstones: { cols: {}, cromos: {} },
+  cruceColId: null,
 };
 
 // ══════════════════════════════════════════
@@ -1244,6 +1312,7 @@ const RETRY_DELAYS  = [4000, 12000, 30000, 60000, 120000];
 // Guarda en IndexedDB inmediatamente.
 // Sube a Drive con debounce (meta siempre, fotos solo si window._dirtyPhotos tiene entradas).
 function save(dirtyColId) {
+  _registrarCambios();
   _localVersion++;
   clearTimeout(_saveTimer);
 
@@ -1254,6 +1323,7 @@ function save(dirtyColId) {
   dbSet('nc_local_' + MY_UID, {
     colecciones: STATE.colecciones,
     version: _localVersion,
+    tombstones: STATE.tombstones,
     savedAt: Date.now()
   }).catch(() => {});
 
@@ -1273,7 +1343,7 @@ async function _doDriveUpload(isRetry = false) {
     const dirty = new Set(window._dirtyPhotos);
     window._dirtyPhotos.clear();
 
-    await window.driveSetData(STATE.colecciones, _localVersion, now, dirty);
+    await window.driveSetData(STATE.colecciones, _localVersion, now, dirty, STATE.tombstones);
 
     setSyncStatus('ok');
     _pendingSync = false;
@@ -1302,48 +1372,43 @@ async function _syncWithDriveInBackground() {
   }
   setSyncStatus('syncing');
   try {
+    _registrarCambios();
     const remote = await window.driveGetData();
 
     if (!remote || !Array.isArray(remote.colecciones)) {
-      // Drive vacío o primer uso → subir lo local
-      if (STATE.colecciones.length > 0) {
-        // Marcar todas las colecciones con fotos como dirty para subir las fotos también
-        for (const col of STATE.colecciones) {
-          if (col.cromos.some(c => c.fotoFront || c.fotoBack))
-            window.driveMarkPhotosDirty?.(col.id);
-        }
-        await _doDriveUpload();
-      } else { setSyncStatus('ok'); }
+      for (const col of STATE.colecciones)
+        if (col.cromos.some(c => c.fotoFront || c.fotoBack)) window.driveMarkPhotosDirty?.(col.id);
+      if (STATE.colecciones.length) await _doDriveUpload(); else setSyncStatus('ok');
       return;
     }
 
-    // Migración: si el remote viene del formato antiguo (un solo archivo con fotos)
-    // las fotos ya están dentro de remote.colecciones, las aceptamos tal cual.
-    const localTs  = _localSavedAt || 0;
-    const remoteTs = remote.savedAt || 0;
+    const remoteCols = sanitizarColecciones(remote.colecciones) || [];
+    const T = fusionarTombstones(STATE.tombstones, remote.tombstones);
+    const remoteCromos = new Map();
+    remoteCols.forEach(col => col.cromos.forEach(c => remoteCromos.set(c.id, c)));
 
-    if (remoteTs > localTs) {
-      // Drive más reciente → reemplazar local
-      STATE.colecciones = remote.colecciones;
-      _localVersion     = remote.version || 0;
-      await dbSet('nc_local_' + MY_UID, {
-        colecciones: STATE.colecciones, version: _localVersion, savedAt: remoteTs
-      }).catch(() => {});
-      _localSavedAt = remoteTs;
-      renderHome();
-      document.getElementById('modal-start')?.classList.remove('show');
-      setSyncStatus('ok');
-      toast('Datos cargados desde Drive ☁️', '✅');
-    } else if (_pendingSync || localTs > remoteTs) {
-      // Local más reciente o había sync pendiente → subir
-      for (const col of STATE.colecciones) {
-        if (col.cromos.some(c => c.fotoFront || c.fotoBack))
-          window.driveMarkPhotosDirty?.(col.id);
-      }
-      await _doDriveUpload(_pendingSync);
-    } else {
-      setSyncStatus('ok');
-    }
+    const merged = mergeEstado(STATE.colecciones, remoteCols, T);
+
+    // Subir fotos solo de colecciones con cromos nuevos o editados en local
+    merged.forEach(col => {
+      const necesita = col.cromos.some(c => (c.fotoFront || c.fotoBack) &&
+        (!remoteCromos.has(c.id) || (c.modAt || 0) > (remoteCromos.get(c.id).modAt || 0)));
+      if (necesita) window.driveMarkPhotosDirty?.(col.id);
+    });
+
+    STATE.colecciones = merged;
+    STATE.tombstones  = T;
+    _snapshotReset();
+    _localVersion++;
+    await dbSet('nc_local_' + MY_UID, {
+      colecciones: STATE.colecciones, version: _localVersion, savedAt: Date.now(), tombstones: T
+    }).catch(() => {});
+
+    if (STATE.currentColId && !getCol()) goHome();   // la colección se borró en otro dispositivo
+    renderHome();
+    if (STATE.currentColId) { buildIndex(getCol()); renderCromos(); }
+
+    await _doDriveUpload();                          // subir el resultado fusionado
   } catch (e) {
     console.error('Drive sync error:', e?.message || e);
     setSyncStatus('error');
@@ -1374,13 +1439,14 @@ async function load() {
       payload = raw2;
     }
     if (payload?.colecciones?.length) {
-      STATE.colecciones = payload.colecciones;
+      STATE.colecciones = sanitizarColecciones(payload.colecciones) || [];
+      STATE.tombstones  = fusionarTombstones(payload.tombstones, null);
       _localVersion     = payload.version  || 0;
       _localSavedAt     = payload.savedAt  || 0;
       document.getElementById('modal-start')?.classList.remove('show');
     }
   } catch {}
-
+  _snapshotReset();
   // Recuperar flag de sync pendiente de sesión anterior
   try {
     if (localStorage.getItem('nc_sync_pending') === '1') {
@@ -2307,7 +2373,8 @@ function importarExcel() {
 function resetExcel() { STATE.excelData=null; STATE.excelHeaders=[]; document.getElementById('excel-preview').style.display='none'; document.getElementById('drop-zone').style.display=''; }
 function exportExcel() {
   const col=getCol(); if(!col.cromos.length){toast('No hay cromos para exportar','⚠️');return;}
-  const ws=XLSX.utils.json_to_sheet(col.cromos.map(c=>({Número:c.numero,Nombre:c.nombre,Tipo:c.tipo,Equipo:c.equipo||'',Repetidos:c.repetidos})));
+  const seguro = v => { const s = String(v ?? ''); return /^[=+\-@\t\r]/.test(s) ? "'" + s : s; };
+  const ws=XLSX.utils.json_to_sheet(col.cromos.map(c=>({Número:seguro(c.numero),Nombre:seguro(c.nombre),Tipo:seguro(c.tipo),Equipo:seguro(c.equipo||''),Repetidos:c.repetidos})));
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,col.name.slice(0,31));
   XLSX.writeFile(wb,`${col.name}.xlsx`); toast('Exportado correctamente','✅');
 }
@@ -2831,7 +2898,7 @@ function toast(msg, icon='ℹ️', duration=3000) {
 //  UTILS
 // ══════════════════════════════════════════
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 
 // Cerrar modales clickando overlay o pulsando Escape
 document.querySelectorAll('.overlay').forEach(o => {
@@ -2902,19 +2969,15 @@ function descargarBackup() {
 // ══════════════════════════════════════════
 function startNew() { document.getElementById('modal-start').classList.remove('show'); }
 
-document.getElementById('file-load').addEventListener('change', (e) => {
+document.getElementById('file-load').addEventListener('change', async (e) => {
   const file = e.target.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    try {
-      const data = JSON.parse(event.target.result);
-      if (!Array.isArray(data)) throw "Formato incorrecto";
-      STATE.colecciones = data; save(); renderHome();
-      document.getElementById('modal-start').classList.remove('show');
-      toast('Archivo cargado correctamente ✅');
-    } catch { toast('Error al cargar archivo ❌'); }
-  };
-  reader.readAsText(file);
+  try {
+    const ok = await cargarArchivoBackup(await file.text());
+    if (ok) document.getElementById('modal-start').classList.remove('show');
+  } catch (err) {
+    toast(err.message || 'Error al cargar archivo ❌');
+  }
+  e.target.value = '';
 });
 
 // ══════════════════════════════════════════
@@ -2986,7 +3049,7 @@ function globalSearch() {
   res.innerHTML = hits.slice(0, 30).map(({ col, c }) => {
     const statusColor = c.tengo === false ? 'var(--red)' : c.repetidos > 0 ? 'var(--yellow)' : 'var(--green)';
     const statusIcon  = c.tengo === false ? '✖' : c.repetidos > 0 ? `×${c.repetidos}` : '✔';
-    return `<div class="gsearch-item" onclick="openColeccion('${col.id}');setTimeout(()=>{document.getElementById('search-input').value=${JSON.stringify(c.nombre||c.numero)};debouncedSearch();},250)">
+    return `<div class="gsearch-item" data-col="${esc(col.id)}" data-q="${esc(c.nombre||c.numero)}">
       <span class="gsearch-col-name">${esc(col.emoji)} ${esc(col.name)}</span>
       <span class="gsearch-cromo-num">#${esc(c.numero)}</span>
       <span class="gsearch-cromo-name">${esc(c.nombre)}</span>
@@ -3204,6 +3267,14 @@ window.addEventListener('offline', () => {
 });
 
 // ── Único punto de arranque ──
+
+document.getElementById('global-search-results').addEventListener('click', e => {
+  const it = e.target.closest('.gsearch-item'); if (!it) return;
+  const q = it.dataset.q;
+  openColeccion(it.dataset.col);
+  setTimeout(() => { document.getElementById('search-input').value = q; debouncedSearch(); }, 250);
+});
+
 window.addEventListener('load', () => {
   (async () => {
     try { setupDropZone(); } catch(e) { console.warn('setupDropZone:', e); }
@@ -3216,5 +3287,6 @@ window.addEventListener('load', () => {
   })().catch(e => { console.error('Boot error:', e); hideSplash(); });
 });
 </script>
+<script src="nc-features.js"></script>
 </body>
 </html>
