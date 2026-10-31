@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex,nofollow">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.jsonbin.io; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Lista de intercambio · CollectionDB</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -228,18 +228,25 @@ function renderPage(data) {
 }
 
 async function init() {
-  const fileId = new URLSearchParams(location.search).get('id');
-  if (!fileId || !/^[a-f0-9]{24}$/i.test(fileId)) { showError(); return; }
+  const z = new URLSearchParams(location.search).get('z');
+  if (!z || z.length > 4000 || !/^[A-Za-z0-9_-]+$/.test(z)) { showError(); return; }
   try {
-    const res = await fetch(`https://api.jsonbin.io/v3/b/${encodeURIComponent(fileId)}/latest`);
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const d = await res.json();
-    if (!d.record?.n) throw new Error('Datos inválidos');
-    renderPage(d.record);
+    const txt = await _descomprimir(z);
+    if (txt.length > 200000) throw new Error('Datos demasiado grandes');
+    const d = JSON.parse(txt);
+    if (!d || typeof d.n !== 'string' || !Array.isArray(d.r) || !Array.isArray(d.f)) throw new Error('Datos inválidos');
+    renderPage(d);
   } catch (e) {
-    console.error('JSONbin error:', e);
+    console.error('Lista no válida:', e);
     showError();
   }
+}
+
+async function _descomprimir(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+  const out = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Response(out).text();
 }
 
 init();
