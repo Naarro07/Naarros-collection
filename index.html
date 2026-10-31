@@ -1047,6 +1047,22 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
+<div class="overlay" id="modal-trueque-edit">
+  <div class="modal modal-wide modal-tall">
+    <div class="modal-close" onclick="closeModal('modal-trueque-edit')">×</div>
+    <h3>✏️ Editar trueque</h3>
+    <h4 style="font-size:13px;margin:6px 0">📤 Diste (repetidos)</h4>
+    <div id="trueque-edit-dio"></div>
+    <h4 style="font-size:13px;margin:14px 0 6px">📥 Recibiste</h4>
+    <div id="trueque-edit-recibio"></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="eliminarTrueque()">🗑 Eliminar</button>
+      <button class="btn btn-secondary" onclick="closeModal('modal-trueque-edit')">Cancelar</button>
+      <button class="btn btn-primary" onclick="confirmarEditarTrueque()">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL ESTADÍSTICAS -->
 <div class="overlay" id="modal-stats">
   <div class="modal modal-wide modal-tall">
