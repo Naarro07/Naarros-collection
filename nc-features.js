@@ -1,10 +1,10 @@
-// ════════════════════════════════════════
+// ══════════════════════════════════════════
 //  nc-features.js
 //  Cruce de listas · Registro de trueques · Merge por cromo
 //  Exportar PDF · Backup cifrado
 //  Requiere index.html (STATE, save, esc, toast, pushUndo, addHistorial,
 //  ID_RE, strCorto, sanitizarColecciones) con los parches aplicados.
-// ════════════════════════════════════════
+// ══════════════════════════════════════════
 
 const _norm = s => String(s ?? '').trim().replace(/^0+(?=\d)/, '');
 
@@ -132,6 +132,40 @@ function cruceConfirmar() {
 
 // ── 2. REGISTRO DE TRUEQUES ─────────────────
 
+// ── 2. REGISTRO DE TRUEQUES ─────────────────
+// Aplica un trueque sobre el inventario. Trabaja con números de cromo.
+function _aplicarTrueque(col, dioNums, recibioNums) {
+  const dio = [], recibio = [];
+  for (const num of dioNums) {
+    const c = col.cromos.find(x => x.numero === num);
+    if (!c || !(c.repetidos > 0)) continue;
+    c.repetidos--; dio.push({ numero: c.numero, nombre: c.nombre });
+  }
+  for (const num of recibioNums) {
+    const c = col.cromos.find(x => x.numero === num);
+    if (!c) continue;
+    const falta = c.tengo === false;
+    if (falta) c.tengo = true; else c.repetidos = (c.repetidos || 0) + 1;
+    recibio.push({ numero: c.numero, nombre: c.nombre, falta });
+  }
+  return { dio, recibio };
+}
+
+// Deshace el efecto de un trueque registrado
+function _revertirTrueque(col, t) {
+  for (const d of t.dio) {
+    const c = col.cromos.find(x => x.numero === d.numero);
+    if (c) c.repetidos = (c.repetidos || 0) + 1;
+  }
+  for (const r of t.recibio) {
+    const c = col.cromos.find(x => x.numero === r.numero);
+    if (!c) continue;
+    // Trueques antiguos no tienen el campo "falta": se deduce por el estado actual
+    const eraFalta = r.falta ?? !(c.repetidos > 0);
+    if (eraFalta) c.tengo = false; else c.repetidos = Math.max(0, c.repetidos - 1);
+  }
+}
+
 function abrirTrueques() {
   const col = getCol(); if (!col) return;
   const lista = col.trueques || [];
@@ -139,11 +173,78 @@ function abrirTrueques() {
   document.getElementById('trueques-list').innerHTML = lista.length
     ? lista.map(t => `<div class="hist-row">
         <span class="hist-badge edit">−${t.dio.length} / +${t.recibio.length}</span>
-        <span style="flex:1;font-size:12px">${nums(t.dio)} ⇄ ${nums(t.recibio)}</span>
+        <span style="flex:1;font-size:12px">${nums(t.dio)} ⇄ ${nums(t.recibio)}${t.editado ? ' <i style="color:var(--text3)">(editado)</i>' : ''}</span>
         <span class="hist-date">${new Date(t.fecha).toLocaleDateString('es', { day: '2-digit', month: '2-digit' })}</span>
+        <button class="btn btn-secondary btn-sm" onclick="abrirEditarTrueque('${t.id}')">✏️</button>
       </div>`).join('')
     : '<p style="color:var(--text3);font-size:13px">Sin trueques registrados.</p>';
   openModal('modal-trueques');
+}
+
+let _editTruequeId = null;
+
+function abrirEditarTrueque(id) {
+  const col = getCol();
+  const t = (col?.trueques || []).find(x => x.id === id); if (!t) return;
+  _editTruequeId = id;
+
+  // Estado simulado tras revertir este trueque. No modifica los datos hasta confirmar.
+  const virt = new Map(col.cromos.map(c => [c.numero, { rep: c.repetidos || 0, tengo: c.tengo !== false }]));
+  for (const d of t.dio) { const v = virt.get(d.numero); if (v) v.rep++; }
+  for (const r of t.recibio) {
+    const v = virt.get(r.numero); if (!v) continue;
+    const eraFalta = r.falta ?? !(v.rep > 0);
+    if (eraFalta) v.tengo = false; else v.rep = Math.max(0, v.rep - 1);
+  }
+
+  const enDio = new Set(t.dio.map(d => d.numero));
+  const enRecibio = new Set(t.recibio.map(r => r.numero));
+  const ordenados = [...col.cromos].sort((a, b) =>
+    String(a.numero).localeCompare(String(b.numero), undefined, { numeric: true, sensitivity: 'base' }));
+
+  const checks = (arr, tipo, marcados) => arr.map(c => `
+    <label class="wa-opt-label" style="padding:3px 0">
+      <input type="checkbox" data-tipo="${tipo}" value="${esc(c.numero)}" ${marcados.has(c.numero) ? 'checked' : ''}>
+      <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`).join('')
+    || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
+
+  document.getElementById('trueque-edit-dio').innerHTML =
+    checks(ordenados.filter(c => virt.get(c.numero).rep > 0), 'da', enDio);
+  document.getElementById('trueque-edit-recibio').innerHTML =
+    checks(ordenados, 'recibe', enRecibio);
+  openModal('modal-trueque-edit');
+}
+
+function confirmarEditarTrueque() {
+  const col = getCol();
+  const t = (col?.trueques || []).find(x => x.id === _editTruequeId); if (!t) return;
+  const marcados = tipo => [...document.querySelectorAll(`#modal-trueque-edit input[data-tipo="${tipo}"]:checked`)].map(i => i.value);
+  const dioNums = marcados('da'), recNums = marcados('recibe');
+  if (!dioNums.length && !recNums.length) { toast('Deja al menos un cromo', '⚠️'); return; }
+
+  _revertirTrueque(col, t);
+  const { dio, recibio } = _aplicarTrueque(col, dioNums, recNums);
+  Object.assign(t, { dio, recibio, editado: Date.now() });
+  addHistorial(col.id, 'edit', `Trueque editado: diste ${dio.length}, recibiste ${recibio.length}`);
+  save();
+  renderCromos();
+  closeModal('modal-trueque-edit');
+  abrirTrueques();
+  toast('Trueque actualizado ✏️', '✅');
+}
+
+function eliminarTrueque() {
+  const col = getCol();
+  const t = (col?.trueques || []).find(x => x.id === _editTruequeId); if (!t) return;
+  if (!confirm('¿Eliminar este trueque? Sus cambios en el inventario se revierten.')) return;
+  _revertirTrueque(col, t);
+  col.trueques = col.trueques.filter(x => x.id !== t.id);
+  addHistorial(col.id, 'del', 'Trueque eliminado');
+  save();
+  renderCromos();
+  closeModal('modal-trueque-edit');
+  abrirTrueques();
+  toast('Trueque eliminado 🗑️');
 }
 
 // ── 3. SINCRONIZACIÓN POR CROMO ─────────────
@@ -203,11 +304,20 @@ function fusionarTombstones(a, b) {
 
 function sanitizarTrueques(arr) {
   const lista = a => Array.isArray(a)
-    ? a.slice(0, 50).filter(x => x && typeof x === 'object').map(x => ({ numero: strCorto(x.numero, 20), nombre: strCorto(x.nombre, 200) }))
+    ? a.slice(0, 50).filter(x => x && typeof x === 'object').map(x => ({
+        numero: strCorto(x.numero, 20),
+        nombre: strCorto(x.nombre, 200),
+        ...(typeof x.falta === 'boolean' ? { falta: x.falta } : {})
+      }))
     : [];
   return Array.isArray(arr)
     ? arr.slice(0, 500).filter(t => t && typeof t === 'object').map(t => ({
-        id: strCorto(t.id, 40), fecha: Number(t.fecha) || 0, dio: lista(t.dio), recibio: lista(t.recibio), nota: strCorto(t.nota, 200)
+        id: strCorto(t.id, 40),
+        fecha: Number(t.fecha) || 0,
+        dio: lista(t.dio),
+        recibio: lista(t.recibio),
+        nota: strCorto(t.nota, 200),
+        ...(t.editado ? { editado: Number(t.editado) || 0 } : {})
       }))
     : [];
 }
