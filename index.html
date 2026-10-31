@@ -132,9 +132,9 @@ window.driveGetData = async () => {
 
 // ── API pública: guardar metadatos (siempre) + fotos sucias (solo si cambiaron) ──
 window.driveSetData = async (colecciones, version, savedAt, dirtyColIds, tombstones) => {
-  if (!_driveAccessToken) return;
+  if (!_driveAccessToken) return [...(dirtyColIds || [])];   // nada subido: todo sigue pendiente
 
-  // 1. Construir payload de meta SIN fotos
+  // 1. Meta SIN fotos
   const metaCols = colecciones.map(col => ({
     ...col,
     cromos: col.cromos.map(c => {
@@ -144,8 +144,9 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds, tombsto
   }));
   await _driveUploadJSON(DRIVE_META_NAME, { colecciones: metaCols, version, savedAt, tombstones });
 
-  // 2. Para cada colección cuyas fotos hayan cambiado, subir en cola de 3 en paralelo
+  // 2. Fotos de las colecciones sucias, en grupos de 3. Devuelve las que han fallado.
   const dirty = dirtyColIds && dirtyColIds.size > 0 ? dirtyColIds : new Set();
+  const fallidas = [];
   const photoJobs = [];
   for (const col of colecciones) {
     if (!dirty.has(col.id)) continue;
@@ -154,12 +155,13 @@ window.driveSetData = async (colecciones, version, savedAt, dirtyColIds, tombsto
       .map(c => ({ id: c.id, front: c.fotoFront || null, back: c.fotoBack || null }));
     photoJobs.push(() =>
       _driveUploadJSON(DRIVE_PHOTO_PFX + col.id + '.json', { colId: col.id, photos })
-        .catch(e => console.error(`Drive — error fotos ${col.id}:`, e))
+        .catch(e => { console.error(`Drive — error fotos ${col.id}:`, e); fallidas.push(col.id); })
     );
   }
   for (let i = 0; i < photoJobs.length; i += 3) {
     await Promise.all(photoJobs.slice(i, i + 3).map(fn => fn()));
   }
+  return fallidas;
 };
 
 // ── Marcar colección como con fotos modificadas ──
@@ -1297,11 +1299,11 @@ async function _doDriveUpload(isRetry = false) {
   setSyncStatus('syncing');
   try {
     const now = Date.now();
-    // Capturar y limpiar el set de colIds sucios ANTES de la subida
+    // Copia de los colIds sucios. Solo se quitan de pendientes los que suben bien.
     const dirty = new Set(window._dirtyPhotos);
-    window._dirtyPhotos.clear();
 
-    await window.driveSetData(STATE.colecciones, _localVersion, now, dirty, STATE.tombstones);
+    const fallidas = await window.driveSetData(STATE.colecciones, _localVersion, now, dirty, STATE.tombstones) || [];
+    for (const id of dirty) if (!fallidas.includes(id)) window._dirtyPhotos.delete(id);
 
     setSyncStatus('ok');
     _pendingSync = false;
@@ -2393,6 +2395,9 @@ function _procesarArchivoFoto(side, file) {
 // ── Recorte de fondo: remove.bg (API gratuita 50/mes) + fallback canvas ──
 async function recortarFondo() {
   if (!_fotoFront && !_fotoBack) return;
+    // Si hay API key, avisar antes de enviar la foto a un tercero
+  const usarRemote = !!getRemoveBgKey() &&
+    confirm('Las fotos de los cromos se enviarán a remove.bg para quitar el fondo. ¿Continuar? (Si cancelas, se usa el recorte local.)');
   const btn = document.getElementById('btn-recortar');
   btn.disabled = true;
   setRecorteStatus('⏳ Eliminando fondo…');
@@ -2405,7 +2410,7 @@ async function recortarFondo() {
     if (!dataUrl) continue;
 
     try {
-      const result = await quitarFondoRemoveBg(dataUrl);
+      const result = usarRemote ? await quitarFondoRemoveBg(dataUrl) : null;
       if (result) {
         if (side === 'front') _fotoFront = result; else _fotoBack = result;
         setFotoPreview(side, result, true);
@@ -2437,8 +2442,6 @@ async function recortarFondo() {
 }
 
 async function quitarFondoRemoveBg(dataUrl) {
-  // remove.bg API — clave pública de demostración (50 imágenes gratis/mes por cuenta)
-  // El usuario puede poner su propia API key aquí si se queda sin créditos
   const REMOVEBG_KEY = getRemoveBgKey();
 
   // Convertir dataUrl a Blob
@@ -2732,6 +2735,33 @@ function copiarTextoWA() {
   });
 }
 
+function _copiarTexto(texto, ok) {
+  if (!texto) { toast('Nada que copiar', '⚠️'); return; }
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = texto; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let good = false;
+    try { good = document.execCommand('copy'); } catch {}
+    ta.remove();
+    toast(good ? ok : 'No se pudo copiar, cópialo a mano', good ? '✅' : '⚠️');
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(texto).then(() => toast(ok, '✅')).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
+function copiarEnlace() {
+  _copiarTexto(document.getElementById('share-link-input').value, 'Enlace copiado');
+}
+
+function copiarWAIntercambio() {
+  _copiarTexto(document.getElementById('wa-output-intercambio').textContent, '¡Copiado! Pega en WhatsApp');
+}
+
 // ══════════════════════════════════════════
 //  TOAST
 // ══════════════════════════════════════════
@@ -2972,44 +3002,10 @@ function initPWA() {
     document.getElementById('pwa-manifest').href = URL.createObjectURL(blob);
   } catch(e) {}
 
-  // ── Service Worker: inyectado como data: URL (evita restricción blob en SW) ──
-  if ('serviceWorker' in navigator) {
-    const SW_VERSION = Date.now();
-    const swCode = `
-const CACHE='naarros-v${SW_VERSION}';
-self.addEventListener('install',e=>{self.skipWaiting();});
-self.addEventListener('activate',e=>{
-  e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>{console.log('SW: borrando caché antiguo',k);return caches.delete(k)}))));
-  self.clients.claim();
-});
-self.addEventListener('fetch',e=>{
-  if(e.request.method!=='GET')return;
-  const url=e.request.url;
-  if(url.startsWith('blob:')||url.startsWith('chrome-extension:'))return;
-  if(url.includes('googleapis.com')||url.includes('accounts.google.com'))return;
-  e.respondWith(
-    fetch(e.request).then(r=>{
-      if(r&&r.status===200&&url.startsWith('http')){
-        const clone=r.clone();
-        caches.open(CACHE).then(c=>c.put(e.request,clone));
-      }
-      return r;
-    }).catch(()=>caches.match(e.request).then(r=>r||new Response('Offline',{status:503})))
-  );
-});`;
-    try {
-      // Usamos un data URL base64 para registrar el SW (funciona en Chrome 91+)
-      const b64 = btoa(unescape(encodeURIComponent(swCode)));
-      const dataUrl = 'data:application/javascript;base64,' + b64;
-      navigator.serviceWorker.register(dataUrl, {scope: '/'})
-        .catch(() => {
-          // fallback: blob URL (funciona en Firefox y algunos Chrome)
-          try {
-            const blob = new Blob([swCode], {type:'application/javascript'});
-            navigator.serviceWorker.register(URL.createObjectURL(blob)).catch(()=>{});
-          } catch {}
-        });
-    } catch(e) {}
+    // ── Service Worker: archivo real sw.js (los data: URL no se pueden registrar) ──
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js')
+      .catch(e => console.warn('SW no registrado:', e));
   }
 
   // ── Banner instalación ──
