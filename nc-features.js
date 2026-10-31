@@ -69,52 +69,63 @@ function cruceCalcular() {
   );
   _cruceTxt = { recibe: leer('recibe'), da: leer('da') };
 
-  const plan = [], avisos = [];
+  const plan = [];
   for (const colId of _cruceSel) {
     const col = STATE.colecciones.find(c => c.id === colId); if (!col) continue;
     const recNums = _parsearNumeros(_cruceTxt.recibe[colId] || '');
     const daNums  = _parsearNumeros(_cruceTxt.da[colId] || '');
-    if (!recNums.length && !daNums.length) continue;   // línea vacía: esta colección no se toca
+    if (!recNums.length && !daNums.length) continue;   // línea vacía: no se toca
 
     const porNum = new Map(col.cromos.map(c => [_normNum(c.numero), c]));
-    const item = { col, recibe: [], da: [] };
+    const item = { col, recibe: [], da: [], errores: [], avisos: [] };
 
     for (const n of recNums) {
       const c = porNum.get(n);
-      if (!c) { avisos.push(`${col.name}: #${n} no existe`); continue; }
+      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
+      if (c.tengo !== false) item.avisos.push(`#${n} ${c.nombre}: ya la tienes, quedará como repetido`);
       item.recibe.push(c);
     }
     for (const n of daNums) {
       const c = porNum.get(n);
-      if (!c) { avisos.push(`${col.name}: #${n} no existe`); continue; }
-      if (!(c.repetidos > 0)) { avisos.push(`${col.name}: #${n} no es repetido, no se puede dar`); continue; }
+      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
+      if (!(c.repetidos > 0)) { item.errores.push(`#${n} ${c.nombre}: no tienes repetido para dar`); continue; }
       item.da.push(c);
     }
-    if (item.recibe.length || item.da.length) plan.push(item);
+    plan.push(item);
   }
 
   if (!plan.length) { toast('No hay cambios que registrar', '⚠️'); return; }
   _cruceResult = plan;
+  renderCruceConfirmacion();
+}
 
+function renderCruceConfirmacion() {
+  const plan = _cruceResult;
+  const bloqueado = plan.some(p => p.errores.length);
   const fila = (c, txt) => `<div style="font-size:13px;padding:3px 0">#${esc(c.numero)} ${esc(c.nombre)}
     <span style="color:var(--text3)">${txt}</span></div>`;
+
   document.getElementById('cruce-paso').innerHTML = `
     <h4 style="font-size:13px;margin:6px 0">Confirmar trueque</h4>
+    <div style="font-weight:700;margin-bottom:10px;color:${bloqueado ? 'var(--red)' : 'var(--green)'}">
+      ${bloqueado ? '❌ Este intercambio no se puede realizar' : '✅ Este intercambio se puede realizar'}
+    </div>
     ${plan.map(p => `<div class="cards-wrap" style="margin-bottom:10px">
       <b>${esc(p.col.emoji)} ${esc(p.col.name)}</b>
       ${p.recibe.map(c => fila(c, c.tengo === false ? '→ pasa a Tengo' : '→ repetido +1')).join('')}
       ${p.da.map(c => fila(c, '→ repetido −1')).join('')}
+      ${p.errores.map(e => `<div style="font-size:12px;color:var(--red);padding:3px 0">❌ ${esc(e)}</div>`).join('')}
+      ${p.avisos.map(a => `<div style="font-size:12px;color:var(--yellow);padding:3px 0">⚠️ ${esc(a)}</div>`).join('')}
     </div>`).join('')}
-    ${avisos.length ? `<div style="color:var(--yellow);font-size:12px;margin:8px 0">${avisos.map(esc).join('<br>')}</div>` : ''}
     <div class="modal-actions" style="justify-content:space-between">
       <button class="btn btn-secondary" onclick="cruceIrPaso2()">← Editar</button>
-      <button class="btn btn-green" onclick="cruceConfirmar()">🤝 Confirmar trueque</button>
+      <button class="btn btn-green" onclick="cruceConfirmar()" ${bloqueado ? 'disabled' : ''}>🤝 Confirmar trueque</button>
     </div>`;
 }
 
 // Aplica los cambios de todas las colecciones del plan
 function cruceConfirmar() {
-  if (!_cruceResult?.length) return;
+    if (_cruceResult?.some(p => p.errores.length)) { toast('Corrige los errores antes de confirmar', '⚠️'); return; }
   let aplicadas = 0;
   for (const p of _cruceResult) {
     const { dio, recibio } = _aplicarTrueque(p.col, p.da.map(c => c.numero), p.recibe.map(c => c.numero));
