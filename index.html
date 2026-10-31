@@ -13,7 +13,7 @@
 <meta http-equiv="X-Frame-Options" content="DENY">
 <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin">
 <meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(), geolocation=()">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' data: https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://api.remove.bg https://api.jsonbin.io; frame-src https://accounts.google.com https://apis.google.com; worker-src 'self' blob: data:; manifest-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' data: https://www.googleapis.com https://oauth2.googleapis.com https://accounts.google.com https://api.remove.bg; frame-src https://accounts.google.com https://apis.google.com; worker-src 'self' blob: data:; manifest-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <link rel="apple-touch-icon" id="apple-touch-icon">
 <link rel="manifest" id="pwa-manifest">
 <title>CollectionsDB</title>
@@ -1075,10 +1075,6 @@ select.form-input { cursor: pointer; }
       <label>API Key de Remove.bg <span style="color:var(--text3);font-weight:400;font-size:11px">(para recortar fondos de fotos)</span></label>
       <input class="form-input" id="aj-removebg" type="password" placeholder="Pega tu API key aquí">
     </div>
-    <div class="form-group">
-      <label>API Key de JSONbin <span style="color:var(--text3);font-weight:400;font-size:11px">(para compartir listas por QR)</span></label>
-      <input class="form-input" id="aj-jsonbin" type="password" placeholder="$2a$10$...">
-    </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal('modal-ajustes')">Cancelar</button>
       <button class="btn btn-primary" onclick="guardarAjustes()">Guardar</button>
@@ -1137,10 +1133,9 @@ function sanitizarColecciones(arr) {
 
 function guardarAjustes() {
   const rbg = document.getElementById('aj-removebg').value.trim();
-  const jb  = document.getElementById('aj-jsonbin').value.trim();
   try {
     if (rbg) localStorage.setItem('nc_removebg_key', rbg);
-    if (jb)  localStorage.setItem('nc_jsonbin_key', jb);
+    localStorage.removeItem('nc_jsonbin_key');   // limpia la clave antigua de este dispositivo
   } catch {}
   closeModal('modal-ajustes');
   toast('Ajustes guardados', '✅');
@@ -1149,9 +1144,6 @@ function guardarAjustes() {
 // ── API keys configurables por el usuario (no hardcodeadas) ──
 function getRemoveBgKey() {
   try { return localStorage.getItem('nc_removebg_key') || ''; } catch { return ''; }
-}
-function getJsonbinKey() {
-  try { return localStorage.getItem('nc_jsonbin_key') || ''; } catch { return ''; }
 }
 
 function hideSplash() {
@@ -1954,7 +1946,6 @@ function openModal(id) {
   if (id === 'modal-ajustes') {
     try {
       document.getElementById('aj-removebg').value = localStorage.getItem('nc_removebg_key') || '';
-      document.getElementById('aj-jsonbin').value  = localStorage.getItem('nc_jsonbin_key') || '';
     } catch {}
   }
   document.getElementById(id).classList.add('show');
@@ -2630,77 +2621,60 @@ function _buildWAText(colId) {
 //  3. Receptor descarga via Drive public URL sin autenticación
 // ══════════════════════════════════════════
 
-// Sube JSON a Drive, lo hace público y devuelve el fileId
-async function _jsonbinShareUpload(shareData) {
-  const res = await fetch('https://api.jsonbin.io/v3/b', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Master-Key': getJsonbinKey(),
-      'X-Bin-Private': 'false'
-    },
-    body: JSON.stringify(shareData)
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(`JSONbin error ${res.status}: ${err.message || ''}`);
-  }
-  const d = await res.json();
-  return d.metadata.id; // bin ID ~24 chars
+// ── Compartir: la lista viaja dentro del enlace (comprimida, sin servidor) ──
+async function _comprimirParaUrl(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const comp = new Uint8Array(await new Response(stream).arrayBuffer());
+  let s = '';
+  for (let i = 0; i < comp.length; i += 0x8000) s += String.fromCharCode.apply(null, comp.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function abrirIntercambio(colId) {
   if (colId) STATE.fichaColId = colId; else STATE.fichaColId = STATE.currentColId;
   const col = STATE.colecciones.find(c => c.id === STATE.fichaColId); if (!col) return;
 
-  const repes = col.cromos
-    .filter(c => c.repetidos > 0 && c.tengo !== false)
-    .map(c => ({ num: c.numero, nom: c.nombre||'', tip: c.tipo||'', eq: c.equipo||'' }));
-  const faltas = col.cromos
-    .filter(c => c.tengo === false)
-    .map(c => ({ num: c.numero, nom: c.nombre||'', tip: c.tipo||'', eq: c.equipo||'' }));
+  const compact = arr => arr.map(c => {
+    const o = { num: strCorto(c.numero, 20) };
+    if (c.nombre) o.nom = strCorto(c.nombre, 40);
+    if (c.equipo) o.eq  = strCorto(c.equipo, 30);
+    if (c.tipo)   o.tip = strCorto(c.tipo, 30);
+    return o;
+  });
+  const repes  = col.cromos.filter(c => c.repetidos > 0 && c.tengo !== false);
+  const faltas = col.cromos.filter(c => c.tengo === false);
 
-  const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
   const qrContainer = document.getElementById('qr-container');
   const linkInput   = document.getElementById('share-link-input');
-
-  qrContainer.innerHTML = `<div style="text-align:center;padding:30px;color:var(--text3)">
-    <div style="font-size:32px;margin-bottom:8px">⏳</div>
-    <div style="font-size:13px">Generando enlace…</div>
-  </div>`;
+  qrContainer.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text3)">Generando enlace…</div>';
   linkInput.value = '';
   openModal('modal-intercambio');
 
   try {
-    const compact = arr => arr.map(c => {
-      const o = { num: c.num };
-      if (c.eq)  o.eq  = c.eq;
-      if (c.tip) o.tip = c.tip;
-      return o;
-    });
-
-    const shareData = { n: col.name, e: col.emoji||'🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
-    const slug = await _jsonbinShareUpload(shareData);
-    const link = `${base}?id=${slug}`;
+    const payload = { n: col.name, e: col.emoji || '🃏', r: compact(repes), f: compact(faltas), ts: Date.now() };
+    const comp = await _comprimirParaUrl(payload);
+    const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '') + 'share.html';
+    const link = `${base}?z=${comp}`;
     linkInput.value = link;
 
     qrContainer.innerHTML = '';
-    const qrDiv = document.createElement('div');
-    qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
-    new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark:'#000', colorLight:'#fff', correctLevel: QRCode.CorrectLevel.L });
-    qrContainer.appendChild(qrDiv);
-
-  } catch(e) {
+    if (link.length <= 2000) {
+      const qrDiv = document.createElement('div');
+      qrDiv.style.cssText = 'background:#fff;border-radius:10px;padding:10px;display:inline-block;';
+      new QRCode(qrDiv, { text: link, width: 240, height: 240, colorDark: '#000', colorLight: '#fff', correctLevel: QRCode.CorrectLevel.L });
+      qrContainer.appendChild(qrDiv);
+    } else {
+      qrContainer.innerHTML = `<div style="font-size:13px;color:var(--text2);padding:12px;text-align:center">
+        La lista es demasiado grande para un QR legible. Copia el enlace y envíalo por WhatsApp.</div>`;
+    }
+  } catch (e) {
     console.error('Share error:', e);
-    qrContainer.innerHTML = `<div style="background:rgba(255,80,80,.1);border:1px solid rgba(255,80,80,.3);border-radius:10px;padding:20px;text-align:center">
-      <div style="font-size:28px;margin-bottom:8px">⚠️</div>
-      <div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:6px">${e.message}</div>
-    </div>`;
+    qrContainer.innerHTML = `<div style="color:var(--red);font-size:13px;text-align:center">No se pudo generar el enlace: ${esc(e.message)}</div>`;
   }
 
-  const waText = _buildWAText(STATE.fichaColId);
   const el = document.getElementById('wa-output-intercambio');
-  if (el) el.textContent = waText;
+  if (el) el.textContent = _buildWAText(STATE.fichaColId);
 }
 
 // ══════════════════════════════════════════
