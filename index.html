@@ -167,10 +167,6 @@ window.driveMarkPhotosDirty = (colId) => { if (colId) window._dirtyPhotos.add(co
 
 // ── Estado visual del indicador ──
 window._driveConnected = false;
-function _driveUpdateStatus(ok) {
-  window._driveConnected = ok;
-  // El indicador visual lo gestiona setSyncStatus() desde el motor principal
-}
 
 // ── Inicializar OAuth y mostrar botón de conexión ──
 // Espera activamente a que el script de Google cargue (async defer puede tardar).
@@ -1004,32 +1000,6 @@ select.form-input { cursor: pointer; }
   </div>
 </div>
 
-<div class="overlay" id="modal-gdrive">
-  <div class="modal modal-wide">
-    <div class="modal-close" onclick="closeModal('modal-gdrive')">×</div>
-    <h3>☁️ Sincronización Google Drive</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">Guarda y carga tu colección como un archivo JSON en Google Drive.</p>
-    <div class="gdrive-section">
-      <h4>📤 Exportar (para pegar en Drive)</h4>
-      <button class="btn btn-primary" style="width:100%" onclick="exportarParaDrive()">📋 Copiar datos al portapapeles</button>
-    </div>
-    <div class="gdrive-section">
-      <h4>📥 Importar desde Drive</h4>
-      <textarea id="gdrive-import-text" class="form-input" rows="4" placeholder='[{"id":"...","name":"...","cromos":[...]}]' style="resize:vertical;font-family:monospace;font-size:12px;"></textarea>
-      <div style="display:flex;gap:8px;margin-top:8px;">
-        <select id="gdrive-merge-mode" class="form-input" style="flex:1;font-size:13px;">
-          <option value="replace">Reemplazar todo</option>
-          <option value="merge">Fusionar (conservar existentes)</option>
-        </select>
-        <button class="btn btn-green" onclick="importarDesdeDrive()">⬆ Importar</button>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeModal('modal-gdrive')">Cerrar</button>
-    </div>
-  </div>
-</div>
-
 <div class="overlay" id="modal-cruce">
   <div class="modal modal-wide modal-tall">
     <div class="modal-close" onclick="closeModal('modal-cruce')">×</div>
@@ -1189,7 +1159,6 @@ function hideSplash() {
   if (s) { s.classList.add('hidden'); setTimeout(() => s.remove(), 350); }
 }
 const EMOJIS = ['⭐','🏆','⚽','🏀','🎮','🦁','🐉','🌍','🎯','🎨','🚀','🎸','🦊','🌊','🔥','💎','🌈','🍕','🐋','🦋'];
-const SAVE_DELAY = 400;
 
 const MY_UID = 'naarro-personal';
 
@@ -1548,7 +1517,6 @@ function setViewMode(mode) {
 // ══════════════════════════════════════════
 //  FAB MENU
 // ══════════════════════════════════════════
-let _fabOpen = false;
 document.getElementById('fab').addEventListener('click', () => {
   openModal('modal-cromo');
 });
@@ -1602,24 +1570,6 @@ function renderCromos() {
   }
 
   const isManual = STATE.cromoSortKey === 'manual';
-
-  // ── Función de comparación numérica robusta ──
-  function cmpNumero(a, b, dir) {
-    const na = a.numero, nb = b.numero;
-    // Extraer prefijo de letras y parte numérica: "A-5" → {pre:"A-", num:5}
-    const parse = s => {
-      const m = String(s).match(/^([^0-9]*)(\d+(?:\.\d+)?)(.*)$/);
-      if (!m) return { pre: String(s), num: Infinity, suf: '' };
-      return { pre: m[1], num: parseFloat(m[2]), suf: m[3] };
-    };
-    const pa = parse(na), pb = parse(nb);
-    // Primero por prefijo de letras
-    if (pa.pre !== pb.pre) return dir * pa.pre.localeCompare(pb.pre);
-    // Luego numéricamente
-    if (pa.num !== pb.num) return dir * (pa.num - pb.num);
-    // Por sufijo
-    return dir * pa.suf.localeCompare(pb.suf);
-  }
 
   if (!isManual) {
     const dir = STATE.cromoSortDir, key = STATE.cromoSortKey;
@@ -1755,11 +1705,6 @@ function renderWithVirtualScroll(list, data, col, isManual, anchorId) {
   _vsObserver.observe(sentinel);
 }
 
-function buildCromoCardHTML(c, col, isManual) {
-  if (STATE.viewMode === 'grid') return buildGridCardHTML(c, col, isManual);
-  return buildListCardHTML(c, col, isManual);
-}
-
 function buildGroupedListHTML(data, col) {
   const isBaseCard = c => !c.tipo || c.tipo.trim() === '' || c.tipo.toLowerCase().includes('base');
   const grupos = new Map();   // clave → { titulo, cards }, en orden de aparición
@@ -1879,13 +1824,6 @@ function setSort(key) {
   renderHome();
 }
 function toggleSortDir() { STATE.sortDir *= -1; document.getElementById('sort-dir-btn').textContent = STATE.sortDir === 1 ? '↑' : '↓'; renderHome(); }
-
-function moveCol(id, delta) {
-  const idx = STATE.colecciones.findIndex(c => c.id === id), ni = idx + delta;
-  if (ni < 0 || ni >= STATE.colecciones.length) return;
-  [STATE.colecciones[idx], STATE.colecciones[ni]] = [STATE.colecciones[ni], STATE.colecciones[idx]];
-  save(); renderHome();
-}
 
 let _dragColId = null;
 function colDragStart(e, id) {
@@ -2023,7 +1961,7 @@ function openModal(id) {
   // Focus primer input tras animación
   setTimeout(() => {
     const first = document.getElementById(id)?.querySelector('input:not([type=hidden]):not([type=radio]):not([type=checkbox])');
-    if (first && id !== 'modal-excel' && id !== 'modal-scan') first.focus();
+    if (first && id !== 'modal-excel') first.focus();
   }, 50);
 }
 
@@ -2685,28 +2623,6 @@ function _buildWAText(colId) {
   return lineas.join('\n');
 }
 
-// ── Comprimir JSON → base64 para URL corta ──
-async function _compressToB64(obj) {
-  const json = JSON.stringify(obj);
-  const stream = new CompressionStream('deflate-raw');
-  const writer = stream.writable.getWriter();
-  writer.write(new TextEncoder().encode(json));
-  writer.close();
-  const chunks = [];
-  const reader = stream.readable.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
-  let offset = 0;
-  for (const c of chunks) { bytes.set(c, offset); offset += c.length; }
-  // base64url (sin +/= que rompen URLs)
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
 // ══════════════════════════════════════════
 //  📤 INTERCAMBIO — Google Drive Share
 //  1. Sube share_XXXX.json a Drive y lo hace público
@@ -2840,38 +2756,6 @@ function copiarTextoWA() {
   navigator.clipboard.writeText(text).then(() => toast('¡Copiado! Pega en WhatsApp', '✅')).catch(() => {
     const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('¡Copiado!', '✅');
   });
-}
-
-// ══════════════════════════════════════════
-//  ☁️ GOOGLE DRIVE (flujo manual)
-// ══════════════════════════════════════════
-function exportarParaDrive() {
-  const json = JSON.stringify(STATE.colecciones, null, 2);
-  navigator.clipboard.writeText(json).then(() => {
-    toast('Datos copiados al portapapeles. Pégalos en tu archivo de Google Drive.', '☁️');
-  }).catch(() => {
-    const blob = new Blob([json], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-    a.download = 'naarros_collection.json'; a.click();
-    toast('Archivo descargado. Súbelo a Google Drive.', '☁️');
-  });
-}
-function importarDesdeDrive() {
-  const text = document.getElementById('gdrive-import-text').value.trim();
-  if (!text) { toast('Pega el contenido del archivo JSON', '⚠️'); return; }
-  try {
-    const data = JSON.parse(text);
-    if (!Array.isArray(data)) { toast('El formato no es válido', '❌'); return; }
-    const mode = document.getElementById('gdrive-merge-mode').value;
-    if (mode === 'replace') { STATE.colecciones = data; toast(`${data.length} colección(es) importadas`, '☁️'); }
-    else {
-      let added = 0;
-      data.forEach(col => { if (!STATE.colecciones.find(c => c.id === col.id)) { STATE.colecciones.push(col); added++; } });
-      toast(`${added} colección(es) nuevas añadidas`, '☁️');
-    }
-    save(); renderHome(); closeModal('modal-gdrive');
-    document.getElementById('gdrive-import-text').value = '';
-  } catch { toast('Error al parsear el JSON. Asegúrate de copiar el archivo completo.', '❌'); }
 }
 
 // ══════════════════════════════════════════
