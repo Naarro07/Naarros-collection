@@ -715,6 +715,8 @@ select.form-input { cursor: pointer; }
       <button class="theme-toggle" onclick="openModal('modal-ajustes')" title="Ajustes">⚙️</button>
       <button class="btn btn-green" onclick="descargarBackup()">💾 Guardar copia</button>
       <button class="btn btn-green" onclick="descargarBackupCifrado()">🔐 Copia cifrada</button>
+      <button class="btn btn-secondary" onclick="abrirCruce()">🤝 Cruce</button>
+      <button class="btn btn-secondary" onclick="abrirTrueques()">📜 Trueques</button>
       <div class="storage-info" id="storage-info"><div class="sync-spinner"></div><div class="dot"></div><span id="storage-label">Cargando…</span></div>
       <button class="btn btn-primary" onclick="openModal('modal-nueva-col')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
@@ -754,8 +756,6 @@ select.form-input { cursor: pointer; }
     </div>
     <button class="btn btn-secondary btn-sm" onclick="abrirStats()" title="Estadísticas">📊</button>
     <button class="btn btn-secondary btn-sm" onclick="abrirIntercambio()" title="Intercambio">🔄</button>
-    <button class="btn btn-secondary btn-sm" onclick="abrirCruce()" title="Cruce de listas">🤝</button>
-<button class="btn btn-secondary btn-sm" onclick="abrirTrueques()" title="Trueques">📜</button>
     <button class="btn btn-secondary btn-sm" onclick="abrirGeneradorWA()" title="WhatsApp">💬</button>
     <div class="col-topbar-progress"><div class="col-topbar-progress-fill" id="topbar-progress-fill" style="width:0%"></div></div>
   </div>
@@ -1026,13 +1026,13 @@ select.form-input { cursor: pointer; }
 <div class="overlay" id="modal-trueque-edit">
   <div class="modal modal-wide modal-tall">
     <div class="modal-close" onclick="closeModal('modal-trueque-edit')">×</div>
-    <h3>✏️ Editar trueque</h3>
+    <h3 id="trueque-edit-titulo">✏️ Editar trueque</h3>
     <h4 style="font-size:13px;margin:6px 0">📤 Diste (repetidos)</h4>
     <div id="trueque-edit-dio"></div>
     <h4 style="font-size:13px;margin:14px 0 6px">📥 Recibiste</h4>
     <div id="trueque-edit-recibio"></div>
     <div class="modal-actions">
-      <button class="btn btn-danger" onclick="eliminarTrueque()">🗑 Eliminar</button>
+      <button class="btn btn-danger" id="btn-deshacer-trueque" onclick="deshacerTrueque()">↩️ Deshacer</button>
       <button class="btn btn-secondary" onclick="closeModal('modal-trueque-edit')">Cancelar</button>
       <button class="btn btn-primary" onclick="confirmarEditarTrueque()">Guardar cambios</button>
     </div>
