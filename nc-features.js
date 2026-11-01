@@ -125,12 +125,14 @@ function renderCruceConfirmacion() {
 
 // Aplica los cambios de todas las colecciones del plan
 function cruceConfirmar() {
-    if (_cruceResult?.some(p => p.errores.length)) { toast('Corrige los errores antes de confirmar', '⚠️'); return; }
+  if (_cruceResult?.some(p => p.errores.length)) { toast('Corrige los errores antes de confirmar', '⚠️'); return; }
+  if (!_cruceResult?.length) return;
+  const grupo = uid();   // identifica el cruce completo
   let aplicadas = 0;
   for (const p of _cruceResult) {
     const { dio, recibio } = _aplicarTrueque(p.col, p.da.map(c => c.numero), p.recibe.map(c => c.numero));
     if (!dio.length && !recibio.length) continue;
-    p.col.trueques = [{ id: uid(), fecha: Date.now(), dio, recibio, nota: '' }, ...(p.col.trueques || [])].slice(0, 500);
+    p.col.trueques = [{ id: uid(), grupo, fecha: Date.now(), dio, recibio, nota: '' }, ...(p.col.trueques || [])].slice(0, 500);
     addHistorial(p.col.id, 'edit', `Trueque: diste ${dio.length}, recibiste ${recibio.length}`);
     aplicadas++;
   }
@@ -140,7 +142,6 @@ function cruceConfirmar() {
   closeModal('modal-cruce');
   toast(`Trueque registrado en ${aplicadas} colección(es) 🤝`, '✅');
 }
-
 // ── 2. REGISTRO DE TRUEQUES ─────────────────
 
 // ── 2. REGISTRO DE TRUEQUES ─────────────────
@@ -177,104 +178,119 @@ function _revertirTrueque(col, t) {
   }
 }
 
-const PLAZO_DESHACER_MS = 21 * 24 * 3600 * 1000;   // 3 semanas
+const PLAZO_DESHACER_MS = 60 * 24 * 3600 * 1000;   // 2 meses: pasado este tiempo el intercambio se quita del historial
 
-// Todos los trueques de todas las colecciones, del más reciente al más antiguo
-function _todosLosTrueques() {
-  const out = [];
-  for (const col of STATE.colecciones)
-    for (const t of col.trueques || []) out.push({ col, t });
-  return out.sort((a, b) => b.t.fecha - a.t.fecha);
+// Quita del historial los intercambios caducados. No toca el inventario.
+function _purgarTruequesAntiguos() {
+  const limite = Date.now() - PLAZO_DESHACER_MS;
+  let quitados = 0;
+  for (const col of STATE.colecciones) {
+    const antes = (col.trueques || []).length;
+    col.trueques = (col.trueques || []).filter(t => t.fecha >= limite);
+    quitados += antes - col.trueques.length;
+  }
+  return quitados;
 }
 
-// Colección a la que pertenece un trueque
-function _colDeTrueque(id) {
-  return STATE.colecciones.find(col => (col.trueques || []).some(t => t.id === id)) || null;
+// Intercambios agrupados: una entrada por cruce, con una parte por colección
+function _intercambios() {
+  const grupos = new Map();
+  for (const col of STATE.colecciones) {
+    for (const t of col.trueques || []) {
+      const key = t.grupo || t.id;   // registros antiguos sin grupo cuentan como uno propio
+      if (!grupos.has(key)) grupos.set(key, { id: key, fecha: t.fecha, partes: [] });
+      const g = grupos.get(key);
+      g.fecha = Math.max(g.fecha, t.fecha);
+      g.partes.push({ col, t });
+    }
+  }
+  return [...grupos.values()].sort((a, b) => b.fecha - a.fecha);
+}
+
+function _buscarGrupo(id) {
+  return _intercambios().find(g => g.id === id) || null;
+}
+
+// Revierte el inventario de todas las partes del intercambio y/o quita sus registros
+function _eliminarGrupo(grupoId, revertir) {
+  for (const col of STATE.colecciones) {
+    const quedan = [];
+    for (const t of col.trueques || []) {
+      if ((t.grupo || t.id) !== grupoId) { quedan.push(t); continue; }
+      if (revertir) {
+        _revertirTrueque(col, t);
+        addHistorial(col.id, 'edit', 'Trueque deshecho');
+      }
+    }
+    col.trueques = quedan;
+  }
 }
 
 function abrirTrueques() {
-  const lista = _todosLosTrueques();
-  const nums = arr => arr.map(x => '#' + esc(x.numero)).join(' ') || '—';
+  if (_purgarTruequesAntiguos()) save();
+  const lista = _intercambios();
+  const nombres = g => g.partes.map(p => `${esc(p.col.emoji)} ${esc(p.col.name)}`).join(' · ');
   const fmt = ts => new Date(ts).toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
   document.getElementById('trueques-list').innerHTML = lista.length
-    ? lista.map(({ col, t }) => `<div class="hist-row" style="${t.anulado ? 'opacity:.5' : ''}">
-        <span class="hist-badge edit">−${t.dio.length} / +${t.recibio.length}</span>
-        <span style="flex:1;font-size:12px">
-          <b>${esc(col.emoji)} ${esc(col.name)}</b><br>
-          ${nums(t.dio)} ⇄ ${nums(t.recibio)}
-          ${t.editado ? ' <i style="color:var(--text3)">(editado)</i>' : ''}
-          ${t.anulado ? ' <i style="color:var(--red)">(deshecho)</i>' : ''}
-        </span>
-        <span class="hist-date">${fmt(t.fecha)}</span>
-        <button class="btn btn-secondary btn-sm" onclick="abrirEditarTrueque('${esc(t.id)}')">✏️</button>
-      </div>`).join('')
+    ? lista.map(g => {
+        const dio = g.partes.reduce((n, p) => n + p.t.dio.length, 0);
+        const recibio = g.partes.reduce((n, p) => n + p.t.recibio.length, 0);
+        return `<div class="hist-row">
+          <span class="hist-badge edit">−${dio} / +${recibio}</span>
+          <span style="flex:1;font-size:12px">${nombres(g)}</span>
+          <span class="hist-date">${fmt(g.fecha)}</span>
+          <button class="btn btn-secondary btn-sm" onclick="abrirDetalleTrueque('${esc(g.id)}')">Ver</button>
+        </div>`;
+      }).join('')
     : '<p style="color:var(--text3);font-size:13px">Sin trueques registrados.</p>';
   openModal('modal-trueques');
 }
 
-let _editTruequeId = null;
+let _grupoActual = null;
 
-function abrirEditarTrueque(id) {
-  const col = _colDeTrueque(id);
-  const t = col?.trueques.find(x => x.id === id); if (!t) return;
-  if (t.anulado) { toast('Este trueque ya está deshecho', 'ℹ️'); return; }
-  _editTruequeId = id;
+function abrirDetalleTrueque(grupoId) {
+  const g = _buscarGrupo(grupoId);
+  if (!g) { toast('Este intercambio ya no existe', 'ℹ️'); return; }
+  _grupoActual = grupoId;
 
-  // Deshacer solo disponible durante el plazo
-  const dentroPlazo = Date.now() - t.fecha < PLAZO_DESHACER_MS;
-  document.getElementById('btn-deshacer-trueque').style.display = dentroPlazo ? '' : 'none';
-
-  document.getElementById('trueque-edit-titulo').textContent = `✏️ ${col.emoji} ${col.name}`;
-
-  // Solo las cartas que forman parte de este trueque, sin repetir
-  const fila = (c, tipo) => `
-    <label class="wa-opt-label" style="padding:3px 0">
-      <input type="checkbox" data-tipo="${tipo}" value="${esc(c.numero)}" checked>
-      <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`;
   const unicos = arr => [...new Map(arr.map(x => [x.numero, x])).values()];
-
-  const dio = unicos(t.dio), recibio = unicos(t.recibio);
-  document.getElementById('trueque-edit-dio').innerHTML =
-    dio.map(c => fila(c, 'da')).join('') || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
-  document.getElementById('trueque-edit-recibio').innerHTML =
-    recibio.map(c => fila(c, 'recibe')).join('') || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
-
-  openModal('modal-trueque-edit');
+  const bloque = (titulo, tipo) => {
+    const secciones = g.partes.map(({ col, t }) => {
+      const cartas = unicos(t[tipo]);
+      if (!cartas.length) return '';
+      return `<div style="margin:6px 0 10px">
+        <div style="font-size:12px;font-weight:700;color:var(--text2)">${esc(col.emoji)} ${esc(col.name)}</div>
+        ${cartas.map(c => `<div style="font-size:13px;padding:2px 0"><b>#${esc(c.numero)}</b> ${esc(c.nombre)}</div>`).join('')}
+      </div>`;
+    }).join('');
+    return `<h4 style="font-size:13px;margin:12px 0 4px">${titulo}</h4>${secciones || '<p style="color:var(--text3);font-size:13px">Ninguna</p>'}`;
+  };
+  document.getElementById('trueque-detalle').innerHTML =
+    bloque('📤 Cartas que doy', 'dio') + bloque('📥 Cartas que me dan', 'recibio');
+  openModal('modal-trueque-detalle');
 }
 
-function confirmarEditarTrueque() {
-  const col = _colDeTrueque(_editTruequeId);
-  const t = col?.trueques.find(x => x.id === _editTruequeId); if (!t || t.anulado) return;
-  const marcados = tipo => [...document.querySelectorAll(`#modal-trueque-edit input[data-tipo="${tipo}"]:checked`)].map(i => i.value);
-  const dioNums = marcados('da'), recNums = marcados('recibe');
-  if (!dioNums.length && !recNums.length) { toast('Deja al menos un cromo', '⚠️'); return; }
-
-  _revertirTrueque(col, t);
-  const { dio, recibio } = _aplicarTrueque(col, dioNums, recNums);
-  Object.assign(t, { dio, recibio, editado: Date.now() });
-  addHistorial(col.id, 'edit', `Trueque editado: diste ${dio.length}, recibiste ${recibio.length}`);
-  save();
-  renderCromos();
-  closeModal('modal-trueque-edit');
-  abrirTrueques();
-  toast('Trueque actualizado ✏️', '✅');
-}
-
-// Deshace un trueque dentro del plazo. Queda en el historial marcado como deshecho.
+// Deshacer: devuelve los cromos a su estado anterior y quita el intercambio del historial
 function deshacerTrueque() {
-  const col = _colDeTrueque(_editTruequeId);
-  const t = col?.trueques.find(x => x.id === _editTruequeId); if (!t || t.anulado) return;
-  if (Date.now() - t.fecha >= PLAZO_DESHACER_MS) { toast('El plazo para deshacer ha terminado', '⚠️'); return; }
-  if (!confirm('¿Deshacer este trueque? Los cromos volverán a su estado anterior.')) return;
-
-  _revertirTrueque(col, t);
-  t.anulado = Date.now();
-  addHistorial(col.id, 'edit', 'Trueque deshecho');
+  const g = _buscarGrupo(_grupoActual); if (!g) return;
+  if (!confirm('¿Deshacer este intercambio? Los cromos volverán a su estado anterior y se quitará del historial.')) return;
+  _eliminarGrupo(g.id, true);
   save();
   renderCromos();
-  closeModal('modal-trueque-edit');
+  closeModal('modal-trueque-detalle');
   abrirTrueques();
   toast('Trueque deshecho ↩️');
+}
+
+// Eliminar: solo quita el intercambio del historial, sin tocar ningún cromo
+function eliminarTrueque() {
+  const g = _buscarGrupo(_grupoActual); if (!g) return;
+  if (!confirm('¿Eliminar este intercambio del historial? Los cromos no se modifican.')) return;
+  _eliminarGrupo(g.id, false);
+  save();
+  closeModal('modal-trueque-detalle');
+  abrirTrueques();
+  toast('Eliminado del historial 🗑️');
 }
 
 // ── 3. SINCRONIZACIÓN POR CROMO ─────────────
@@ -343,6 +359,7 @@ function sanitizarTrueques(arr) {
   return Array.isArray(arr)
     ? arr.slice(0, 500).filter(t => t && typeof t === 'object').map(t => ({
         id: strCorto(t.id, 40),
+        ...(t.grupo ? { grupo: strCorto(t.grupo, 40) } : {}),
         fecha: Number(t.fecha) || 0,
         dio: lista(t.dio),
         recibio: lista(t.recibio),
