@@ -224,31 +224,21 @@ function abrirEditarTrueque(id) {
   const dentroPlazo = Date.now() - t.fecha < PLAZO_DESHACER_MS;
   document.getElementById('btn-deshacer-trueque').style.display = dentroPlazo ? '' : 'none';
 
-  // Estado simulado tras revertir este trueque. No modifica los datos hasta confirmar.
-  const virt = new Map(col.cromos.map(c => [c.numero, { rep: c.repetidos || 0, tengo: c.tengo !== false }]));
-  for (const d of t.dio) { const v = virt.get(d.numero); if (v) v.rep++; }
-  for (const r of t.recibio) {
-    const v = virt.get(r.numero); if (!v) continue;
-    const eraFalta = r.falta ?? !(v.rep > 0);
-    if (eraFalta) v.tengo = false; else v.rep = Math.max(0, v.rep - 1);
-  }
-
-  const enDio = new Set(t.dio.map(d => d.numero));
-  const enRecibio = new Set(t.recibio.map(r => r.numero));
-  const ordenados = [...col.cromos].sort((a, b) =>
-    String(a.numero).localeCompare(String(b.numero), undefined, { numeric: true, sensitivity: 'base' }));
-
-  const checks = (arr, tipo, marcados) => arr.map(c => `
-    <label class="wa-opt-label" style="padding:3px 0">
-      <input type="checkbox" data-tipo="${tipo}" value="${esc(c.numero)}" ${marcados.has(c.numero) ? 'checked' : ''}>
-      <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`).join('')
-    || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
-
   document.getElementById('trueque-edit-titulo').textContent = `✏️ ${col.emoji} ${col.name}`;
+
+  // Solo las cartas que forman parte de este trueque, sin repetir
+  const fila = (c, tipo) => `
+    <label class="wa-opt-label" style="padding:3px 0">
+      <input type="checkbox" data-tipo="${tipo}" value="${esc(c.numero)}" checked>
+      <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`;
+  const unicos = arr => [...new Map(arr.map(x => [x.numero, x])).values()];
+
+  const dio = unicos(t.dio), recibio = unicos(t.recibio);
   document.getElementById('trueque-edit-dio').innerHTML =
-    checks(ordenados.filter(c => virt.get(c.numero).rep > 0), 'da', enDio);
+    dio.map(c => fila(c, 'da')).join('') || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
   document.getElementById('trueque-edit-recibio').innerHTML =
-    checks(ordenados, 'recibe', enRecibio);
+    recibio.map(c => fila(c, 'recibe')).join('') || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
+
   openModal('modal-trueque-edit');
 }
 
