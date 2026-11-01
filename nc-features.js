@@ -177,16 +177,36 @@ function _revertirTrueque(col, t) {
   }
 }
 
+const PLAZO_DESHACER_MS = 21 * 24 * 3600 * 1000;   // 3 semanas
+
+// Todos los trueques de todas las colecciones, del más reciente al más antiguo
+function _todosLosTrueques() {
+  const out = [];
+  for (const col of STATE.colecciones)
+    for (const t of col.trueques || []) out.push({ col, t });
+  return out.sort((a, b) => b.t.fecha - a.t.fecha);
+}
+
+// Colección a la que pertenece un trueque
+function _colDeTrueque(id) {
+  return STATE.colecciones.find(col => (col.trueques || []).some(t => t.id === id)) || null;
+}
+
 function abrirTrueques() {
-  const col = getCol(); if (!col) return;
-  const lista = col.trueques || [];
+  const lista = _todosLosTrueques();
   const nums = arr => arr.map(x => '#' + esc(x.numero)).join(' ') || '—';
+  const fmt = ts => new Date(ts).toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
   document.getElementById('trueques-list').innerHTML = lista.length
-    ? lista.map(t => `<div class="hist-row">
+    ? lista.map(({ col, t }) => `<div class="hist-row" style="${t.anulado ? 'opacity:.5' : ''}">
         <span class="hist-badge edit">−${t.dio.length} / +${t.recibio.length}</span>
-        <span style="flex:1;font-size:12px">${nums(t.dio)} ⇄ ${nums(t.recibio)}${t.editado ? ' <i style="color:var(--text3)">(editado)</i>' : ''}</span>
-        <span class="hist-date">${new Date(t.fecha).toLocaleDateString('es', { day: '2-digit', month: '2-digit' })}</span>
-        <button class="btn btn-secondary btn-sm" onclick="abrirEditarTrueque('${t.id}')">✏️</button>
+        <span style="flex:1;font-size:12px">
+          <b>${esc(col.emoji)} ${esc(col.name)}</b><br>
+          ${nums(t.dio)} ⇄ ${nums(t.recibio)}
+          ${t.editado ? ' <i style="color:var(--text3)">(editado)</i>' : ''}
+          ${t.anulado ? ' <i style="color:var(--red)">(deshecho)</i>' : ''}
+        </span>
+        <span class="hist-date">${fmt(t.fecha)}</span>
+        <button class="btn btn-secondary btn-sm" onclick="abrirEditarTrueque('${esc(t.id)}')">✏️</button>
       </div>`).join('')
     : '<p style="color:var(--text3);font-size:13px">Sin trueques registrados.</p>';
   openModal('modal-trueques');
@@ -195,9 +215,14 @@ function abrirTrueques() {
 let _editTruequeId = null;
 
 function abrirEditarTrueque(id) {
-  const col = getCol();
-  const t = (col?.trueques || []).find(x => x.id === id); if (!t) return;
+  const col = _colDeTrueque(id);
+  const t = col?.trueques.find(x => x.id === id); if (!t) return;
+  if (t.anulado) { toast('Este trueque ya está deshecho', 'ℹ️'); return; }
   _editTruequeId = id;
+
+  // Deshacer solo disponible durante el plazo
+  const dentroPlazo = Date.now() - t.fecha < PLAZO_DESHACER_MS;
+  document.getElementById('btn-deshacer-trueque').style.display = dentroPlazo ? '' : 'none';
 
   // Estado simulado tras revertir este trueque. No modifica los datos hasta confirmar.
   const virt = new Map(col.cromos.map(c => [c.numero, { rep: c.repetidos || 0, tengo: c.tengo !== false }]));
@@ -219,6 +244,7 @@ function abrirEditarTrueque(id) {
       <b>#${esc(c.numero)}</b> ${esc(c.nombre)}</label>`).join('')
     || '<p style="color:var(--text3);font-size:13px">Ninguno</p>';
 
+  document.getElementById('trueque-edit-titulo').textContent = `✏️ ${col.emoji} ${col.name}`;
   document.getElementById('trueque-edit-dio').innerHTML =
     checks(ordenados.filter(c => virt.get(c.numero).rep > 0), 'da', enDio);
   document.getElementById('trueque-edit-recibio').innerHTML =
@@ -227,8 +253,8 @@ function abrirEditarTrueque(id) {
 }
 
 function confirmarEditarTrueque() {
-  const col = getCol();
-  const t = (col?.trueques || []).find(x => x.id === _editTruequeId); if (!t) return;
+  const col = _colDeTrueque(_editTruequeId);
+  const t = col?.trueques.find(x => x.id === _editTruequeId); if (!t || t.anulado) return;
   const marcados = tipo => [...document.querySelectorAll(`#modal-trueque-edit input[data-tipo="${tipo}"]:checked`)].map(i => i.value);
   const dioNums = marcados('da'), recNums = marcados('recibe');
   if (!dioNums.length && !recNums.length) { toast('Deja al menos un cromo', '⚠️'); return; }
@@ -244,18 +270,21 @@ function confirmarEditarTrueque() {
   toast('Trueque actualizado ✏️', '✅');
 }
 
-function eliminarTrueque() {
-  const col = getCol();
-  const t = (col?.trueques || []).find(x => x.id === _editTruequeId); if (!t) return;
-  if (!confirm('¿Eliminar este trueque? Sus cambios en el inventario se revierten.')) return;
+// Deshace un trueque dentro del plazo. Queda en el historial marcado como deshecho.
+function deshacerTrueque() {
+  const col = _colDeTrueque(_editTruequeId);
+  const t = col?.trueques.find(x => x.id === _editTruequeId); if (!t || t.anulado) return;
+  if (Date.now() - t.fecha >= PLAZO_DESHACER_MS) { toast('El plazo para deshacer ha terminado', '⚠️'); return; }
+  if (!confirm('¿Deshacer este trueque? Los cromos volverán a su estado anterior.')) return;
+
   _revertirTrueque(col, t);
-  col.trueques = col.trueques.filter(x => x.id !== t.id);
-  addHistorial(col.id, 'del', 'Trueque eliminado');
+  t.anulado = Date.now();
+  addHistorial(col.id, 'edit', 'Trueque deshecho');
   save();
   renderCromos();
   closeModal('modal-trueque-edit');
   abrirTrueques();
-  toast('Trueque eliminado 🗑️');
+  toast('Trueque deshecho ↩️');
 }
 
 // ── 3. SINCRONIZACIÓN POR CROMO ─────────────
@@ -328,7 +357,8 @@ function sanitizarTrueques(arr) {
         dio: lista(t.dio),
         recibio: lista(t.recibio),
         nota: strCorto(t.nota, 200),
-        ...(t.editado ? { editado: Number(t.editado) || 0 } : {})
+        ...(t.editado ? { editado: Number(t.editado) || 0 } : {}),
+        ...(t.anulado ? { anulado: Number(t.anulado) || 0 } : {})
       }))
     : [];
 }
