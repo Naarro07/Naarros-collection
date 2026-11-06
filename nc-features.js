@@ -8,14 +8,19 @@
 
 const _norm = s => String(s ?? '').trim().replace(/^0+(?=\d)/, '');
 
-// ── 1. CRUCE DE LISTAS (por colección) ──────
-let _cruceSel = [];      // ids de colecciones marcadas en el paso 1
-let _cruceTxt = null;    // texto escrito en el paso 2 (para no perderlo al volver atrás)
-let _cruceResult = null; // cambios calculados para la pantalla de confirmación
+// ══ CRUCE Y TRUEQUES ══════════════════════════
+// Estados: 'prep' (reservas, sin tocar inventario) → 'envio' (bloqueado) → 'final' (aplicado y cerrado)
+const PLAZO_HISTORIAL_MS = 60 * 24 * 3600 * 1000;   // 2 meses desde que se finalizó
+const ESTADOS = { prep: 'Preparación', envio: 'Enviado', final: 'Finalizado' };
+const COLOR_ESTADO = { prep: 'var(--yellow)', envio: 'var(--accent2)', final: 'var(--green)' };
+
+let _cruceSel = [];       // ids de colecciones marcadas
+let _cruceTxt = null;     // texto de las líneas { recibe: {colId: txt}, da: {colId: txt} }
+let _cruceResult = null;  // plan calculado para la confirmación
+let _editGrupo = null;    // id del intercambio en preparación que se edita
 
 const _normNum = s => String(s ?? '').trim().toUpperCase();
 
-// Extrae números de una línea: "219, 220, 370A" → ["219","220","370A"]
 function _parsearNumeros(texto) {
   return [...new Set(
     String(texto).split(/[,;\s]+/)
@@ -24,128 +29,19 @@ function _parsearNumeros(texto) {
   )];
 }
 
-// Paso 1: elegir colecciones
-function abrirCruce() {
-  if (!STATE.colecciones.length) { toast('No tienes colecciones', '⚠️'); return; }
-  _cruceSel = []; _cruceTxt = null; _cruceResult = null;
-  document.getElementById('cruce-paso').innerHTML = `
-    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Marca las colecciones en las que vais a cambiar cromos.</p>
-    ${STATE.colecciones.map(c => `<label class="wa-opt-label" style="padding:6px 0">
-      <input type="checkbox" class="cruce-col-chk" value="${esc(c.id)}" ${c.id === STATE.currentColId ? 'checked' : ''}>
-      ${esc(c.emoji)} ${esc(c.name)}</label>`).join('')}
-    <div class="modal-actions" style="justify-content:flex-start">
-      <button class="btn btn-primary" onclick="cruceIrPaso2()">Continuar</button>
-    </div>`;
-  openModal('modal-cruce');
-}
-
-// Paso 2: una línea por colección para "me dan" y otra para "doy"
-function cruceIrPaso2() {
-  if (_cruceSel.length === 0) {
-    _cruceSel = [...document.querySelectorAll('.cruce-col-chk:checked')].map(i => i.value);
+// ── Reservas de intercambios pendientes (no finalizados) ──
+// Clave: "colId|numero". excluir = grupo que se está editando, para no contarse a sí mismo.
+function _reservasPendientes(excluir) {
+  const dio = new Map(), recibe = new Map();
+  for (const col of STATE.colecciones) for (const t of col.trueques || []) {
+    if (t.estado === 'final' || (t.grupo || t.id) === excluir) continue;
+    for (const d of t.dio) { const k = col.id + '|' + d.numero; dio.set(k, (dio.get(k) || 0) + 1); }
+    for (const r of t.recibio) { const k = col.id + '|' + r.numero; recibe.set(k, (recibe.get(k) || 0) + 1); }
   }
-  if (!_cruceSel.length) { toast('Marca al menos una colección', '⚠️'); return; }
-  const cols = _cruceSel.map(id => STATE.colecciones.find(c => c.id === id)).filter(Boolean);
-  const valor = (tipo, id) => esc(_cruceTxt?.[tipo]?.[id] || '');
-  const linea = (tipo, col) => `<div style="margin-bottom:10px">
-    <label style="font-size:12px;font-weight:700;color:var(--text2)">${esc(col.emoji)} ${esc(col.name)}</label>
-    <input class="form-input" data-tipo="${tipo}" data-col="${esc(col.id)}" value="${valor(tipo, col.id)}"
-      placeholder="Ej: 219, 220, 370A" style="margin-top:4px"></div>`;
-  document.getElementById('cruce-paso').innerHTML = `
-    <h4 style="font-size:13px;margin:6px 0">📥 Cartas que me dan</h4>
-    ${cols.map(c => linea('recibe', c)).join('')}
-    <h4 style="font-size:13px;margin:14px 0 6px">📤 Cartas que doy</h4>
-    ${cols.map(c => linea('da', c)).join('')}
-    <div class="modal-actions" style="justify-content:space-between">
-      <button class="btn btn-secondary" onclick="abrirCruce()">← Atrás</button>
-      <button class="btn btn-primary" onclick="cruceCalcular()">Revisar</button>
-    </div>`;
+  return { dio, recibe };
 }
 
-// Paso 3: calcular cambios y mostrar confirmación
-function cruceCalcular() {
-  const leer = tipo => Object.fromEntries(
-    [...document.querySelectorAll(`#cruce-paso input[data-tipo="${tipo}"]`)].map(i => [i.dataset.col, i.value])
-  );
-  _cruceTxt = { recibe: leer('recibe'), da: leer('da') };
-
-  const plan = [];
-  for (const colId of _cruceSel) {
-    const col = STATE.colecciones.find(c => c.id === colId); if (!col) continue;
-    const recNums = _parsearNumeros(_cruceTxt.recibe[colId] || '');
-    const daNums  = _parsearNumeros(_cruceTxt.da[colId] || '');
-    if (!recNums.length && !daNums.length) continue;   // línea vacía: no se toca
-
-    const porNum = new Map(col.cromos.map(c => [_normNum(c.numero), c]));
-    const item = { col, recibe: [], da: [], errores: [], avisos: [] };
-
-    for (const n of recNums) {
-      const c = porNum.get(n);
-      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
-      if (c.tengo !== false) item.avisos.push(`#${n} ${c.nombre}: ya la tienes, quedará como repetido`);
-      item.recibe.push(c);
-    }
-    for (const n of daNums) {
-      const c = porNum.get(n);
-      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
-      if (!(c.repetidos > 0)) { item.errores.push(`#${n} ${c.nombre}: no tienes repetido para dar`); continue; }
-      item.da.push(c);
-    }
-    plan.push(item);
-  }
-
-  if (!plan.length) { toast('No hay cambios que registrar', '⚠️'); return; }
-  _cruceResult = plan;
-  renderCruceConfirmacion();
-}
-
-function renderCruceConfirmacion() {
-  const plan = _cruceResult;
-  const bloqueado = plan.some(p => p.errores.length);
-  const fila = (c, txt) => `<div style="font-size:13px;padding:3px 0">#${esc(c.numero)} ${esc(c.nombre)}
-    <span style="color:var(--text3)">${txt}</span></div>`;
-
-  document.getElementById('cruce-paso').innerHTML = `
-    <h4 style="font-size:13px;margin:6px 0">Confirmar trueque</h4>
-    <div style="font-weight:700;margin-bottom:10px;color:${bloqueado ? 'var(--red)' : 'var(--green)'}">
-      ${bloqueado ? '❌ Este intercambio no se puede realizar' : '✅ Este intercambio se puede realizar'}
-    </div>
-    ${plan.map(p => `<div class="cards-wrap" style="margin-bottom:10px">
-      <b>${esc(p.col.emoji)} ${esc(p.col.name)}</b>
-      ${p.recibe.map(c => fila(c, c.tengo === false ? '→ pasa a Tengo' : '→ repetido +1')).join('')}
-      ${p.da.map(c => fila(c, '→ repetido −1')).join('')}
-      ${p.errores.map(e => `<div style="font-size:12px;color:var(--red);padding:3px 0">❌ ${esc(e)}</div>`).join('')}
-      ${p.avisos.map(a => `<div style="font-size:12px;color:var(--yellow);padding:3px 0">⚠️ ${esc(a)}</div>`).join('')}
-    </div>`).join('')}
-    <div class="modal-actions" style="justify-content:space-between">
-      <button class="btn btn-secondary" onclick="cruceIrPaso2()">← Editar</button>
-      <button class="btn btn-green" onclick="cruceConfirmar()" ${bloqueado ? 'disabled' : ''}>🤝 Confirmar trueque</button>
-    </div>`;
-}
-
-// Aplica los cambios de todas las colecciones del plan
-function cruceConfirmar() {
-  if (_cruceResult?.some(p => p.errores.length)) { toast('Corrige los errores antes de confirmar', '⚠️'); return; }
-  if (!_cruceResult?.length) return;
-  const grupo = uid();   // identifica el cruce completo
-  let aplicadas = 0;
-  for (const p of _cruceResult) {
-    const { dio, recibio } = _aplicarTrueque(p.col, p.da.map(c => c.numero), p.recibe.map(c => c.numero));
-    if (!dio.length && !recibio.length) continue;
-    p.col.trueques = [{ id: uid(), grupo, fecha: Date.now(), dio, recibio, nota: '' }, ...(p.col.trueques || [])].slice(0, 500);
-    addHistorial(p.col.id, 'edit', `Trueque: diste ${dio.length}, recibiste ${recibio.length}`);
-    aplicadas++;
-  }
-  _cruceResult = null;
-  save();
-  renderCromos();
-  closeModal('modal-cruce');
-  toast(`Trueque registrado en ${aplicadas} colección(es) 🤝`, '✅');
-}
-// ── 2. REGISTRO DE TRUEQUES ─────────────────
-
-// ── 2. REGISTRO DE TRUEQUES ─────────────────
-// Aplica un trueque sobre el inventario. Trabaja con números de cromo.
+// ── Aplicar un trueque al inventario (solo al finalizar) ──
 function _aplicarTrueque(col, dioNums, recibioNums) {
   const dio = [], recibio = [];
   for (const num of dioNums) {
@@ -163,46 +59,15 @@ function _aplicarTrueque(col, dioNums, recibioNums) {
   return { dio, recibio };
 }
 
-// Deshace el efecto de un trueque registrado
-function _revertirTrueque(col, t) {
-  for (const d of t.dio) {
-    const c = col.cromos.find(x => x.numero === d.numero);
-    if (c) c.repetidos = (c.repetidos || 0) + 1;
-  }
-  for (const r of t.recibio) {
-    const c = col.cromos.find(x => x.numero === r.numero);
-    if (!c) continue;
-    // Trueques antiguos no tienen el campo "falta": se deduce por el estado actual
-    const eraFalta = r.falta ?? !(c.repetidos > 0);
-    if (eraFalta) c.tengo = false; else c.repetidos = Math.max(0, c.repetidos - 1);
-  }
-}
-
-const PLAZO_DESHACER_MS = 60 * 24 * 3600 * 1000;   // 2 meses: pasado este tiempo el intercambio se quita del historial
-
-// Quita del historial los intercambios caducados. No toca el inventario.
-function _purgarTruequesAntiguos() {
-  const limite = Date.now() - PLAZO_DESHACER_MS;
-  let quitados = 0;
-  for (const col of STATE.colecciones) {
-    const antes = (col.trueques || []).length;
-    col.trueques = (col.trueques || []).filter(t => t.fecha >= limite);
-    quitados += antes - col.trueques.length;
-  }
-  return quitados;
-}
-
-// Intercambios agrupados: una entrada por cruce, con una parte por colección
+// ── Agrupación por intercambio ──
 function _intercambios() {
   const grupos = new Map();
-  for (const col of STATE.colecciones) {
-    for (const t of col.trueques || []) {
-      const key = t.grupo || t.id;   // registros antiguos sin grupo cuentan como uno propio
-      if (!grupos.has(key)) grupos.set(key, { id: key, fecha: t.fecha, partes: [] });
-      const g = grupos.get(key);
-      g.fecha = Math.max(g.fecha, t.fecha);
-      g.partes.push({ col, t });
-    }
+  for (const col of STATE.colecciones) for (const t of col.trueques || []) {
+    const key = t.grupo || t.id;
+    if (!grupos.has(key)) grupos.set(key, { id: key, fecha: t.fecha, estado: t.estado || 'final', partes: [] });
+    const g = grupos.get(key);
+    g.fecha = Math.max(g.fecha, t.fecha);
+    g.partes.push({ col, t });
   }
   return [...grupos.values()].sort((a, b) => b.fecha - a.fecha);
 }
@@ -211,21 +76,187 @@ function _buscarGrupo(id) {
   return _intercambios().find(g => g.id === id) || null;
 }
 
-// Revierte el inventario de todas las partes del intercambio y/o quita sus registros
-function _eliminarGrupo(grupoId, revertir) {
-  for (const col of STATE.colecciones) {
-    const quedan = [];
-    for (const t of col.trueques || []) {
-      if ((t.grupo || t.id) !== grupoId) { quedan.push(t); continue; }
-      if (revertir) {
-        _revertirTrueque(col, t);
-        addHistorial(col.id, 'edit', 'Trueque deshecho');
-      }
-    }
-    col.trueques = quedan;
-  }
+function _setEstadoGrupo(grupoId, estado) {
+  for (const col of STATE.colecciones)
+    for (const t of col.trueques || []) if ((t.grupo || t.id) === grupoId) t.estado = estado;
 }
 
+// Quita los registros del historial. No toca inventario.
+function _quitarGrupo(grupoId) {
+  for (const col of STATE.colecciones)
+    col.trueques = (col.trueques || []).filter(t => (t.grupo || t.id) !== grupoId);
+}
+
+// Quita del historial los finalizados caducados. Los pendientes no caducan.
+function _purgarTruequesAntiguos() {
+  const limite = Date.now() - PLAZO_HISTORIAL_MS;
+  let quitados = 0;
+  for (const col of STATE.colecciones) {
+    const antes = (col.trueques || []).length;
+    col.trueques = (col.trueques || []).filter(t => t.estado !== 'final' || (t.cerrado || t.fecha) >= limite);
+    quitados += antes - col.trueques.length;
+  }
+  return quitados;
+}
+
+// ── PASO 1: elegir colecciones ──
+function abrirCruce(grupoId) {
+  if (!STATE.colecciones.length) { toast('No tienes colecciones', '⚠️'); return; }
+  _cruceResult = null; _cruceTxt = null; _cruceSel = []; _editGrupo = null;
+
+  if (grupoId) {
+    const g = _buscarGrupo(grupoId);
+    if (!g || g.estado !== 'prep') { toast('Solo se pueden editar intercambios en preparación', '⚠️'); return; }
+    _editGrupo = g.id;
+    _cruceSel = g.partes.map(p => p.col.id);
+    _cruceTxt = { recibe: {}, da: {} };
+    for (const { col, t } of g.partes) {
+      _cruceTxt.recibe[col.id] = t.recibio.map(r => r.numero).join(', ');
+      _cruceTxt.da[col.id] = t.dio.map(d => d.numero).join(', ');
+    }
+    closeModal('modal-trueque-detalle');
+  }
+  _renderPaso1();
+  openModal('modal-cruce');
+}
+
+function _renderPaso1() {
+  const marcadas = new Set(_cruceSel.length ? _cruceSel : [STATE.currentColId]);
+  document.getElementById('cruce-paso').innerHTML = `
+    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">${_editGrupo
+      ? 'Editando un intercambio en preparación.'
+      : 'Marca las colecciones en las que vais a cambiar cromos.'}</p>
+    ${STATE.colecciones.map(c => `<label class="wa-opt-label" style="padding:6px 0">
+      <input type="checkbox" class="cruce-col-chk" value="${esc(c.id)}" ${marcadas.has(c.id) ? 'checked' : ''}>
+      ${esc(c.emoji)} ${esc(c.name)}</label>`).join('')}
+    <div class="modal-actions" style="justify-content:flex-start">
+      <button class="btn btn-primary" onclick="cruceIrPaso2()">Continuar</button>
+    </div>`;
+}
+
+// Guarda lo escrito en el paso 2 antes de cambiar de pantalla
+function _guardarTextos() {
+  if (!document.querySelector('#cruce-paso input[data-tipo]')) return;
+  const leer = tipo => Object.fromEntries(
+    [...document.querySelectorAll(`#cruce-paso input[data-tipo="${tipo}"]`)].map(i => [i.dataset.col, i.value])
+  );
+  _cruceTxt = { recibe: leer('recibe'), da: leer('da') };
+}
+
+function cruceAtras() {
+  _guardarTextos();
+  _renderPaso1();
+}
+
+// ── PASO 2: una línea por colección ──
+function cruceIrPaso2() {
+  if (document.querySelector('.cruce-col-chk')) {
+    _cruceSel = [...document.querySelectorAll('.cruce-col-chk:checked')].map(i => i.value);
+  }
+  if (!_cruceSel.length) { toast('Marca al menos una colección', '⚠️'); return; }
+  const cols = _cruceSel.map(id => STATE.colecciones.find(c => c.id === id)).filter(Boolean);
+  const valor = (tipo, id) => esc(_cruceTxt?.[tipo]?.[id] || '');
+  const linea = (tipo, col) => `<div style="margin-bottom:10px">
+    <label style="font-size:12px;font-weight:700;color:var(--text2)">${esc(col.emoji)} ${esc(col.name)}</label>
+    <input class="form-input" data-tipo="${tipo}" data-col="${esc(col.id)}" value="${valor(tipo, col.id)}"
+      placeholder="Ej: 219, 220, 370A" style="margin-top:4px"></div>`;
+  document.getElementById('cruce-paso').innerHTML = `
+    <h4 style="font-size:13px;margin:6px 0">📥 Cartas que me dan</h4>
+    ${cols.map(c => linea('recibe', c)).join('')}
+    <h4 style="font-size:13px;margin:14px 0 6px">📤 Cartas que doy</h4>
+    ${cols.map(c => linea('da', c)).join('')}
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn btn-secondary" onclick="cruceAtras()">← Atrás</button>
+      <button class="btn btn-primary" onclick="cruceCalcular()">Revisar</button>
+    </div>`;
+}
+
+// ── PASO 3: calcular y validar contra reservas ──
+function cruceCalcular() {
+  _guardarTextos();
+  const res = _reservasPendientes(_editGrupo);
+  const plan = [];
+
+  for (const colId of _cruceSel) {
+    const col = STATE.colecciones.find(c => c.id === colId); if (!col) continue;
+    const recNums = _parsearNumeros(_cruceTxt?.recibe?.[colId] || '');
+    const daNums  = _parsearNumeros(_cruceTxt?.da?.[colId] || '');
+    if (!recNums.length && !daNums.length) continue;   // línea vacía: no se toca
+
+    const porNum = new Map(col.cromos.map(c => [_normNum(c.numero), c]));
+    const item = { col, recibe: [], da: [], errores: [], avisos: [] };
+
+    for (const n of recNums) {
+      const c = porNum.get(n);
+      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
+      if (res.recibe.get(col.id + '|' + c.numero)) item.avisos.push(`#${n} ${c.nombre}: ya la tienes pedida en otro intercambio pendiente`);
+      if (c.tengo !== false) item.avisos.push(`#${n} ${c.nombre}: ya la tienes, quedará como repetido`);
+      item.recibe.push(c);
+    }
+    for (const n of daNums) {
+      const c = porNum.get(n);
+      if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
+      const libres = (c.repetidos || 0) - (res.dio.get(col.id + '|' + c.numero) || 0);
+      if (libres <= 0) { item.errores.push(`#${n} ${c.nombre}: no tienes repetido libre (sin repetidos o reservado en otro intercambio)`); continue; }
+      item.da.push(c);
+    }
+    plan.push(item);
+  }
+
+  if (!plan.length) { toast('No hay cambios que guardar', '⚠️'); return; }
+  _cruceResult = plan;
+  renderCruceConfirmacion();
+}
+
+function renderCruceConfirmacion() {
+  const plan = _cruceResult;
+  const bloqueado = plan.some(p => p.errores.length);
+  const fila = (c, txt) => `<div style="font-size:13px;padding:3px 0">#${esc(c.numero)} ${esc(c.nombre)}
+    <span style="color:var(--text3)">${txt}</span></div>`;
+
+  document.getElementById('cruce-paso').innerHTML = `
+    <h4 style="font-size:13px;margin:6px 0">${_editGrupo ? 'Editar intercambio' : 'Guardar intercambio'} (Preparación)</h4>
+    <div style="font-weight:700;margin-bottom:10px;color:${bloqueado ? 'var(--red)' : 'var(--green)'}">
+      ${bloqueado ? '❌ Este intercambio no se puede realizar' : '✅ Este intercambio se puede realizar'}
+    </div>
+    ${plan.map(p => `<div class="cards-wrap" style="margin-bottom:10px">
+      <b>${esc(p.col.emoji)} ${esc(p.col.name)}</b>
+      ${p.recibe.map(c => fila(c, c.tengo === false ? '→ pasará a Tengo al finalizar' : '→ repetido +1 al finalizar')).join('')}
+      ${p.da.map(c => fila(c, '→ repetido −1 al finalizar (reservado)')).join('')}
+      ${p.errores.map(e => `<div style="font-size:12px;color:var(--red);padding:3px 0">❌ ${esc(e)}</div>`).join('')}
+      ${p.avisos.map(a => `<div style="font-size:12px;color:var(--yellow);padding:3px 0">⚠️ ${esc(a)}</div>`).join('')}
+    </div>`).join('')}
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="btn btn-secondary" onclick="cruceIrPaso2()">← Editar</button>
+      <button class="btn btn-green" onclick="cruceConfirmar()" ${bloqueado ? 'disabled' : ''}>💾 Guardar intercambio</button>
+    </div>`;
+}
+
+// Guarda el intercambio en Preparación. No modifica los contadores.
+function cruceConfirmar() {
+  if (_cruceResult?.some(p => p.errores.length)) { toast('Corrige los errores antes de guardar', '⚠️'); return; }
+  if (!_cruceResult?.length) return;
+
+  const grupo = _editGrupo || uid();
+  if (_editGrupo) _quitarGrupo(_editGrupo);   // al editar, se sustituye el intercambio entero
+  const lista = arr => arr.map(c => ({ numero: c.numero, nombre: c.nombre }));
+
+  for (const p of _cruceResult) {
+    if (!p.da.length && !p.recibe.length) continue;
+    p.col.trueques = [{
+      id: uid(), grupo, estado: 'prep', fecha: Date.now(),
+      dio: lista(p.da), recibio: lista(p.recibe), nota: ''
+    }, ...(p.col.trueques || [])].slice(0, 500);
+  }
+
+  _cruceResult = null; _cruceSel = []; _cruceTxt = null; _editGrupo = null;
+  save();
+  closeModal('modal-cruce');
+  abrirTrueques();
+  toast('Intercambio guardado en preparación 💾', '✅');
+}
+
+// ── HISTORIAL ──
 function abrirTrueques() {
   if (_purgarTruequesAntiguos()) save();
   const lista = _intercambios();
@@ -235,7 +266,9 @@ function abrirTrueques() {
     ? lista.map(g => {
         const dio = g.partes.reduce((n, p) => n + p.t.dio.length, 0);
         const recibio = g.partes.reduce((n, p) => n + p.t.recibio.length, 0);
+        const color = COLOR_ESTADO[g.estado] || COLOR_ESTADO.final;
         return `<div class="hist-row">
+          <span class="hist-badge" style="color:${color};border:1px solid ${color}">${ESTADOS[g.estado] || ESTADOS.final}</span>
           <span class="hist-badge edit">−${dio} / +${recibio}</span>
           <span style="flex:1;font-size:12px">${nombres(g)}</span>
           <span class="hist-date">${fmt(g.fecha)}</span>
@@ -246,13 +279,22 @@ function abrirTrueques() {
   openModal('modal-trueques');
 }
 
-let _grupoActual = null;
+function _renderAcciones(g) {
+  const id = esc(g.id);
+  const acciones = {
+    prep: `<button class="btn btn-secondary" onclick="abrirCruce('${id}')">✏️ Editar</button>
+           <button class="btn btn-danger" onclick="cancelarIntercambio('${id}')">✖ Cancelar</button>
+           <button class="btn btn-green" onclick="cambiarEstadoIntercambio('${id}','envio')">📦 Marcar enviado</button>`,
+    envio: `<button class="btn btn-secondary" onclick="cambiarEstadoIntercambio('${id}','prep')">↩️ Volver a Preparación</button>
+            <button class="btn btn-green" onclick="finalizarIntercambio('${id}')">✅ Marcar finalizado</button>`,
+    final: `<button class="btn btn-danger" onclick="eliminarTrueque('${id}')">🗑 Eliminar del historial</button>`
+  }[g.estado] || '';
+  return acciones + `<button class="btn btn-secondary" onclick="closeModal('modal-trueque-detalle')">Cerrar</button>`;
+}
 
 function abrirDetalleTrueque(grupoId) {
   const g = _buscarGrupo(grupoId);
   if (!g) { toast('Este intercambio ya no existe', 'ℹ️'); return; }
-  _grupoActual = grupoId;
-
   const unicos = arr => [...new Map(arr.map(x => [x.numero, x])).values()];
   const bloque = (titulo, tipo) => {
     const secciones = g.partes.map(({ col, t }) => {
@@ -265,28 +307,65 @@ function abrirDetalleTrueque(grupoId) {
     }).join('');
     return `<h4 style="font-size:13px;margin:12px 0 4px">${titulo}</h4>${secciones || '<p style="color:var(--text3);font-size:13px">Ninguna</p>'}`;
   };
+  const color = COLOR_ESTADO[g.estado] || COLOR_ESTADO.final;
   document.getElementById('trueque-detalle').innerHTML =
+    `<span class="hist-badge" style="color:${color};border:1px solid ${color}">${ESTADOS[g.estado] || ESTADOS.final}</span>` +
     bloque('📤 Cartas que doy', 'dio') + bloque('📥 Cartas que me dan', 'recibio');
+  document.getElementById('trueque-acciones').innerHTML = _renderAcciones(g);
   openModal('modal-trueque-detalle');
 }
 
-// Deshacer: devuelve los cromos a su estado anterior y quita el intercambio del historial
-function deshacerTrueque() {
-  const g = _buscarGrupo(_grupoActual); if (!g) return;
-  if (!confirm('¿Deshacer este intercambio? Los cromos volverán a su estado anterior y se quitará del historial.')) return;
-  _eliminarGrupo(g.id, true);
+// ── TRANSICIONES ──
+function cambiarEstadoIntercambio(grupoId, estado) {
+  const g = _buscarGrupo(grupoId); if (!g) return;
+  if (estado === 'envio' && !confirm('¿Marcar como enviado? Ya no se podrá editar hasta volver a Preparación.')) return;
+  _setEstadoGrupo(grupoId, estado);
   save();
-  renderCromos();
-  closeModal('modal-trueque-detalle');
   abrirTrueques();
-  toast('Trueque deshecho ↩️');
+  abrirDetalleTrueque(grupoId);
 }
 
-// Eliminar: solo quita el intercambio del historial, sin tocar ningún cromo
-function eliminarTrueque() {
-  const g = _buscarGrupo(_grupoActual); if (!g) return;
+function cancelarIntercambio(grupoId) {
+  const g = _buscarGrupo(grupoId); if (!g || g.estado !== 'prep') return;
+  if (!confirm('¿Cancelar este intercambio? Sus reservas se liberan.')) return;
+  _quitarGrupo(grupoId);
+  save();
+  closeModal('modal-trueque-detalle');
+  abrirTrueques();
+  toast('Intercambio cancelado', 'ℹ️');
+}
+
+// Aplica el intercambio a las colecciones y lo cierra. Irreversible.
+function finalizarIntercambio(grupoId) {
+  const g = _buscarGrupo(grupoId); if (!g || g.estado !== 'envio') return;
+
+  const errores = [];
+  for (const { col, t } of g.partes) for (const d of t.dio) {
+    const c = col.cromos.find(x => x.numero === d.numero);
+    if (!c) errores.push(`${col.name}: #${d.numero} ya no existe`);
+    else if (!(c.repetidos > 0)) errores.push(`${col.name}: #${d.numero} ya no tiene repetido para dar`);
+  }
+  if (errores.length) { alert('No se puede finalizar:\n\n' + errores.join('\n')); return; }
+  if (!confirm('¿Finalizar el intercambio? Los cambios se aplicarán a las colecciones y ya no se podrá editar.')) return;
+
+  const ahora = Date.now();
+  for (const { col, t } of g.partes) {
+    const { dio, recibio } = _aplicarTrueque(col, t.dio.map(d => d.numero), t.recibio.map(r => r.numero));
+    Object.assign(t, { dio, recibio, estado: 'final', cerrado: ahora });
+    addHistorial(col.id, 'edit', `Intercambio finalizado: diste ${dio.length}, recibiste ${recibio.length}`);
+  }
+  save();
+  renderCromos();
+  abrirTrueques();
+  abrirDetalleTrueque(grupoId);
+  toast('Intercambio finalizado ✅', '✅');
+}
+
+// Solo quita del historial. No toca cromos.
+function eliminarTrueque(grupoId) {
+  const g = _buscarGrupo(grupoId); if (!g || g.estado !== 'final') return;
   if (!confirm('¿Eliminar este intercambio del historial? Los cromos no se modifican.')) return;
-  _eliminarGrupo(g.id, false);
+  _quitarGrupo(grupoId);
   save();
   closeModal('modal-trueque-detalle');
   abrirTrueques();
@@ -360,12 +439,13 @@ function sanitizarTrueques(arr) {
     ? arr.slice(0, 500).filter(t => t && typeof t === 'object').map(t => ({
         id: strCorto(t.id, 40),
         ...(t.grupo ? { grupo: strCorto(t.grupo, 40) } : {}),
+        estado: ['prep', 'envio', 'final'].includes(t.estado) ? t.estado : 'final',  // antiguos = ya aplicados
         fecha: Number(t.fecha) || 0,
+        ...(t.cerrado ? { cerrado: Number(t.cerrado) || 0 } : {}),
         dio: lista(t.dio),
         recibio: lista(t.recibio),
         nota: strCorto(t.nota, 200),
-        ...(t.editado ? { editado: Number(t.editado) || 0 } : {}),
-        ...(t.anulado ? { anulado: Number(t.anulado) || 0 } : {})
+        ...(t.editado ? { editado: Number(t.editado) || 0 } : {})
       }))
     : [];
 }
