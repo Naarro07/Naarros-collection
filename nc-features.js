@@ -115,6 +115,7 @@ function abrirCruce(grupoId) {
       _cruceTxt.da[col.id] = t.dio.map(d => d.numero).join(', ');
     }
     closeModal('modal-trueque-detalle');
+    closeModal('modal-trueques');   // evita que el historial quede debajo del cruce
   }
   _renderPaso1();
   openModal('modal-cruce');
@@ -190,7 +191,7 @@ function cruceCalcular() {
       const c = porNum.get(n);
       if (!c) { item.errores.push(`#${n} no existe en la colección`); continue; }
       if (res.recibe.get(col.id + '|' + c.numero)) item.avisos.push(`#${n} ${c.nombre}: ya la tienes pedida en otro intercambio pendiente`);
-      if (c.tengo !== false) item.avisos.push(`#${n} ${c.nombre}: ya la tienes, quedará como repetido`);
+      if (c.tengo !== false) item.errores.push(`#${n} ${c.nombre}: ya la tienes, no puedes recibirla repetida`);
       item.recibe.push(c);
     }
     for (const n of daNums) {
