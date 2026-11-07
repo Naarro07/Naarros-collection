@@ -77,12 +77,17 @@ function _buscarGrupo(id) {
 }
 
 function _setEstadoGrupo(grupoId, estado) {
+  const ahora = Date.now();
   for (const col of STATE.colecciones)
-    for (const t of col.trueques || []) if ((t.grupo || t.id) === grupoId) t.estado = estado;
+    for (const t of col.trueques || []) if ((t.grupo || t.id) === grupoId) { t.estado = estado; t.modAt = ahora; }
 }
 
-// Quita los registros del historial. No toca inventario.
+// Quita los registros del historial y deja lápida para que no vuelvan desde Drive.
 function _quitarGrupo(grupoId) {
+  const T = STATE.tombstones.trueques ||= {};
+  const ahora = Date.now();
+  for (const col of STATE.colecciones)
+    for (const t of col.trueques || []) if ((t.grupo || t.id) === grupoId) T[t.id] = ahora;
   for (const col of STATE.colecciones)
     col.trueques = (col.trueques || []).filter(t => (t.grupo || t.id) !== grupoId);
 }
@@ -90,10 +95,16 @@ function _quitarGrupo(grupoId) {
 // Quita del historial los finalizados caducados. Los pendientes no caducan.
 function _purgarTruequesAntiguos() {
   const limite = Date.now() - PLAZO_HISTORIAL_MS;
+  const T = STATE.tombstones.trueques ||= {};
+  const ahora = Date.now();
   let quitados = 0;
   for (const col of STATE.colecciones) {
     const antes = (col.trueques || []).length;
-    col.trueques = (col.trueques || []).filter(t => t.estado !== 'final' || (t.cerrado || t.fecha) >= limite);
+    col.trueques = (col.trueques || []).filter(t => {
+      const caduco = t.estado === 'final' && (t.cerrado || t.fecha) < limite;
+      if (caduco) T[t.id] = ahora;
+      return !caduco;
+    });
     quitados += antes - col.trueques.length;
   }
   return quitados;
@@ -245,7 +256,7 @@ function cruceConfirmar() {
   for (const p of _cruceResult) {
     if (!p.da.length && !p.recibe.length) continue;
     p.col.trueques = [{
-      id: uid(), grupo, estado: 'prep', fecha: Date.now(),
+      id: uid(), grupo, estado: 'prep', modAt: Date.now(), fecha: Date.now(),
       dio: lista(p.da), recibio: lista(p.recibe), nota: ''
     }, ...(p.col.trueques || [])].slice(0, 500);
   }
@@ -352,7 +363,7 @@ function finalizarIntercambio(grupoId) {
   const ahora = Date.now();
   for (const { col, t } of g.partes) {
     const { dio, recibio } = _aplicarTrueque(col, t.dio.map(d => d.numero), t.recibio.map(r => r.numero));
-    Object.assign(t, { dio, recibio, estado: 'final', cerrado: ahora });
+    Object.assign(t, { dio, recibio, estado: 'final', modAt: ahora, cerrado: ahora });
     addHistorial(col.id, 'edit', `Intercambio finalizado: diste ${dio.length}, recibiste ${recibio.length}`);
   }
   save();
@@ -415,8 +426,8 @@ function _registrarCambios() {
 }
 
 function fusionarTombstones(a, b) {
-  const out = { cols: {}, cromos: {} };
-  for (const k of ['cols', 'cromos']) {
+  const out = { cols: {}, cromos: {}, trueques: {} };
+  for (const k of ['cols', 'cromos', 'trueques']) {
     for (const src of [a?.[k], b?.[k]]) {
       if (!src || typeof src !== 'object') continue;
       for (const [id, ts] of Object.entries(src)) {
@@ -442,6 +453,7 @@ function sanitizarTrueques(arr) {
         ...(t.grupo ? { grupo: strCorto(t.grupo, 40) } : {}),
         estado: ['prep', 'envio', 'final'].includes(t.estado) ? t.estado : 'final',  // antiguos = ya aplicados
         fecha: Number(t.fecha) || 0,
+        modAt: Number(t.modAt) || 0,
         ...(t.cerrado ? { cerrado: Number(t.cerrado) || 0 } : {}),
         dio: lista(t.dio),
         recibio: lista(t.recibio),
@@ -465,6 +477,20 @@ function mergeCromos(lc, rc, Tc) {
   return out;
 }
 
+// Un intercambio se identifica por su grupo (o su id si es antiguo).
+// Gana la versión más reciente. Lo borrado (lápida) no vuelve.
+function mergeTrueques(lt, rt, Tt) {
+  const mejor = new Map();
+  for (const t of [...(lt || []), ...(rt || [])]) {
+    const mod = t.modAt || t.fecha || 0;
+    if (Tt?.[t.id] && Tt[t.id] >= mod) continue;
+    const key = t.grupo || t.id;
+    const prev = mejor.get(key);
+    if (!prev || mod > (prev.modAt || prev.fecha || 0)) mejor.set(key, t);
+  }
+  return [...mejor.values()].sort((a, b) => b.fecha - a.fecha).slice(0, 500);
+}
+
 function mergeEstado(localCols, remoteCols, T) {
   const L = new Map(localCols.map(c => [c.id, c]));
   const R = new Map(remoteCols.map(c => [c.id, c]));
@@ -477,7 +503,7 @@ function mergeEstado(localCols, remoteCols, T) {
     const trs = new Map([...(l?.trueques || []), ...(r?.trueques || [])].map(t => [t.id, t]));
     out.push({
       ...base,
-      trueques: [...trs.values()].sort((a, b) => b.fecha - a.fecha).slice(0, 500),
+      trueques: mergeTrueques(l?.trueques, r?.trueques, T.trueques),
       cromos: mergeCromos(l?.cromos || [], r?.cromos || [], T.cromos),
     });
   }
